@@ -1,0 +1,260 @@
+@import "tailwindcss" source(none);
+
+@source "./**/*.{ts,tsx}";
+@source "../node_modules/deepspace/dist/**/*.js";
+
+html {
+  font-size: 17px;
+}
+
+@theme {
+  /* BookMe — aura-scheduling theme (light gray bg, black accents) */
+  --color-background: #F3F4F6;
+  --color-foreground: #111827;
+  --color-card: #ffffff;
+  --color-card-foreground: #111827;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #111827;
+  --color-primary: #111111;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f3f4f6;
+  --color-secondary-foreground: #111827;
+  --color-muted: #f3f4f6;
+  --color-muted-foreground: #6B7280;
+  --color-accent: #e5e7eb;
+  --color-accent-foreground: #111827;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #E5E7EB;
+  --color-input: #E5E7EB;
+  --color-ring: rgba(17, 17, 17, 0.4);
+  --radius: 0.5rem;
+
+  --color-success: #10b981;
+  --color-success-foreground: #ffffff;
+  --color-warning: #f59e0b;
+  --color-warning-foreground: #ffffff;
+  --color-info: #3b82f6;
+  --color-info-foreground: #ffffff;
+
+  --color-sidebar: #111111;
+  --color-sidebar-foreground: #ffffff;
+  --color-sidebar-muted: rgba(255,255,255,0.6);
+  --color-sidebar-border: rgba(255,255,255,0.05);
+  --color-sidebar-hover: rgba(255,255,255,0.05);
+
+  --color-app-bg: #F3F4F6;
+  --color-app-sidebar: #111111;
+  --color-app-card: #FFFFFF;
+  --color-app-border: #E5E7EB;
+  --color-app-text: #111827;
+  --color-app-text-muted: #6B7280;
+
+  --shadow-card: 0 1px 3px rgba(17, 24, 39, 0.08);
+
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+
+  --color-surface: var(--color-background);
+  --color-surface-elevated: #ffffff;
+  --color-surface-overlay: var(--color-muted);
+  --color-surface-input: #f3f4f6;
+  --color-content: var(--color-foreground);
+  --color-content-secondary: var(--color-muted-foreground);
+  --color-content-muted: #6B7280;
+  --color-content-inverse: #ffffff;
+  --color-border-strong: #d1d5db;
+  --color-border-focus: var(--color-ring);
+  --color-primary-hover: #1f2937;
+  --color-primary-muted: rgba(17, 17, 17, 0.08);
+  --color-primary-border: rgba(17, 17, 17, 0.15);
+  --color-danger: var(--color-destructive);
+  --color-danger-muted: rgba(239, 68, 68, 0.2);
+  --color-danger-border: rgba(239, 68, 68, 0.4);
+  --color-success-muted: rgba(16, 185, 129, 0.15);
+  --color-success-border: rgba(16, 185, 129, 0.3);
+  --color-warning-muted: rgba(245, 158, 11, 0.2);
+  --color-warning-border: rgba(245, 158, 11, 0.4);
+  --color-info-muted: rgba(59, 130, 246, 0.2);
+  --color-info-border: rgba(59, 130, 246, 0.4);
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-enter 0.18s ease-out both;
+}
+
+@keyframes wizard-enter-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes wizard-enter-from-right {
+  from { opacity: 0; transform: translateX(36px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes wizard-enter-from-left {
+  from { opacity: 0; transform: translateX(-36px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes wizard-exit-to-left {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-36px); }
+}
+@keyframes wizard-exit-to-right {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(36px); }
+}
+
+.wizard-enter-up {
+  animation: wizard-enter-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.wizard-enter-from-right {
+  animation: wizard-enter-from-right 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.wizard-enter-from-left {
+  animation: wizard-enter-from-left 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.wizard-exit-to-left {
+  animation: wizard-exit-to-left 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.wizard-exit-to-right {
+  animation: wizard-exit-to-right 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.card-utility {
+  @apply rounded-lg border border-border bg-card text-card-foreground shadow-sm;
+}
+
+.badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded-md text-[13px] font-medium;
+}
+
+.custom-scrollbar {
+  scrollbar-gutter: stable;
+}
+
+.custom-scrollbar::-webkit-scrollbar,
+.scrollbar-grey::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track,
+.scrollbar-grey::-webkit-scrollbar-track {
+  background: #f3f4f6;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.scrollbar-grey::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.scrollbar-grey::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.custom-scrollbar,
+.scrollbar-grey {
+  scrollbar-color: #d1d5db #f3f4f6;
+  scrollbar-width: thin;
+}
+
+.booking-next-wrapper {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-width 0.28s ease-out, opacity 0.2s ease-out;
+}
+.booking-next-wrapper.open {
+  max-width: 6rem;
+  opacity: 1;
+}
+
+@keyframes booking-slide-out-left {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-20px); }
+}
+@keyframes booking-slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes booking-slide-out-right {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(20px); }
+}
+@keyframes booking-slide-in-left {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.booking-panel-out-left {
+  animation: booking-slide-out-left 0.22s ease-out forwards;
+}
+.booking-panel-in-right {
+  animation: booking-slide-in-right 0.22s ease-out forwards;
+}
+.booking-panel-out-right {
+  animation: booking-slide-out-right 0.22s ease-out forwards;
+}
+.booking-panel-in-left {
+  animation: booking-slide-in-left 0.22s ease-out forwards;
+}
+
+.cal-card {
+  @apply rounded-xl border border-border bg-card shadow-sm hover:shadow-md transition-all duration-200;
+}
+.app-card {
+  @apply bg-white rounded-xl border border-[var(--color-app-border)] shadow-sm transition-all duration-300;
+}
+.app-btn-primary {
+  @apply px-4 py-2 bg-black text-white rounded-lg font-bold text-[12px] uppercase tracking-wider shadow-sm hover:bg-gray-800 active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2;
+}
+.app-btn-secondary {
+  @apply px-4 py-2 bg-white text-black border border-[var(--color-app-border)] rounded-lg font-bold text-[12px] uppercase tracking-wider shadow-sm hover:bg-gray-50 active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2;
+}
+.app-sidebar-item {
+  @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-[12px] font-bold uppercase tracking-wider transition-all duration-300;
+}
+.app-sidebar-item-active {
+  @apply bg-white text-black shadow-md;
+}
+.app-sidebar-item-inactive {
+  @apply text-white hover:bg-white/5;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.cal-btn-primary {
+  @apply px-4 py-2 bg-primary text-primary-foreground rounded-lg font-medium hover:opacity-90 active:scale-[0.98] transition-all duration-200 disabled:opacity-50;
+}
+.cal-btn-secondary {
+  @apply px-4 py-2 bg-card text-foreground border border-border rounded-lg font-medium hover:bg-muted active:scale-[0.98] transition-all duration-200;
+}
+.cal-btn-ghost {
+  @apply px-4 py-2 text-foreground rounded-lg font-medium hover:bg-muted transition-all duration-200;
+}
+
+::selection {
+  background-color: rgba(59, 130, 246, 0.35);
+  color: inherit;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

@@ -1,0 +1,3 @@
+{
+  "tasks": [{ "name": "send-reminders", "intervalMinutes": 30 }]
+}

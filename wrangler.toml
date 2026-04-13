@@ -1,0 +1,47 @@
+name = "book2me"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+main = "worker.ts"
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/ws/*", "/internal/*", "/platform/*"]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AppRecordRoom", "AppYjsRoom", "AppCanvasRoom", "AppMediaRoom", "AppPresenceRoom"]
+
+[durable_objects]
+bindings = [
+  { name = "RECORD_ROOMS", class_name = "AppRecordRoom" },
+  { name = "YJS_ROOMS", class_name = "AppYjsRoom" },
+  { name = "CANVAS_ROOMS", class_name = "AppCanvasRoom" },
+  { name = "MEDIA_ROOMS", class_name = "AppMediaRoom" },
+  { name = "PRESENCE_ROOMS", class_name = "AppPresenceRoom" },
+]
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "book2me-files"
+
+[vars]
+APP_NAME = "book2me"
+# Same host as deepspace client `PROD_CONFIG.platformWorkerUrl` — used when `PLATFORM_WORKER` service binding is absent (local dev).
+PLATFORM_WORKER_URL = "https://deepspace-platform-worker.eudaimonicincorporated.workers.dev"
+# Override in dashboard / .dev.vars — must match a verified sender in Resend (or your provider).
+BOOKING_EMAIL_FROM = "BookMe <onboarding@resend.dev>"
+# Skip Resend / `email/send` (set false or remove when you wire transactional email again).
+DISABLE_BOOKING_EMAIL = "false"
+
+[dev]
+port = 8780
+inspector_port = 9237
+
+# Secrets (set via `wrangler secret put` or written by `deepspace dev`):
+#   AUTH_JWT_PUBLIC_KEY
+#   AUTH_JWT_ISSUER
+#   AUTH_WORKER_URL
+#   OWNER_USER_ID
+#   INTERNAL_STORAGE_HMAC_SECRET
