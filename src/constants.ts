@@ -480,7 +480,15 @@ export function getAvailableSlots(
     const hostStart = getZonedYMDHM(slotStart, hostTz)
     const hostEnd = getZonedYMDHM(slotEnd, hostTz)
     const slotStartMins = hostStart.hour * 60 + hostStart.minute
-    const slotEndMins = hostEnd.hour * 60 + hostEnd.minute
+    // If the slot end falls on a different calendar day in the host timezone (e.g. a 23:30
+    // slot whose end wraps to 00:00 the next day), getZonedYMDHM returns hour=0 minute=0
+    // which evaluates to 0 — falsely satisfying any slotEndMins <= availEnd check.
+    // Treat cross-midnight ends as 24:00 (1440 min) so they correctly fail the block test.
+    const hostEndSameDay =
+      hostEnd.year === hostStart.year &&
+      hostEnd.month === hostStart.month &&
+      hostEnd.day === hostStart.day
+    const slotEndMins = hostEndSameDay ? hostEnd.hour * 60 + hostEnd.minute : 24 * 60
 
     const inBlock = daySettings.blocks.some(b => {
       const availStart = parseTimeToMinutes(b.startTime)
