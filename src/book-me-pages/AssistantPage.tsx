@@ -1263,7 +1263,7 @@ export default function AssistantPage() {
       />
 
       {/* Header bar — h-14 aligns with sidebar logo, Back + user icon at top right */}
-      <header className="h-14 shrink-0 flex items-center justify-end px-6 gap-3 relative z-20 bg-[var(--color-app-bg)]">
+      <header className="h-14 shrink-0 flex items-start justify-end px-6 pt-6 gap-3 relative z-20 bg-[var(--color-app-bg)]">
         {step > 0 && step < steps.length - 1 && (
           <button
             type="button"

@@ -510,10 +510,10 @@ app.get('*', async (c) => {
 // =============================================================================
 
 function createActionTools(env: Env, userId: string, callerJwt: string): ActionTools {
-  const scopeId = `app:${env.APP_NAME}`
-
   async function execTool(tool: string, params: Record<string, unknown>): Promise<ActionResult> {
-    const doId = env.RECORD_ROOMS.idFromName(scopeId)
+    // Route to the correct DO instance based on scopeId (e.g. user:{id} vs app:{name}).
+    const targetScope = (params.scopeId as string) || `app:${env.APP_NAME}`
+    const doId = env.RECORD_ROOMS.idFromName(targetScope)
     const stub = env.RECORD_ROOMS.get(doId)
     // RecordRoom tool handler enables RBAC bypass only when appAction=true is on the URL and
     // userId is in the JSON body (see deepspace handleToolExecute). Without both, updates hit
