@@ -42,6 +42,7 @@ import type { MeetingLocation } from '../constants'
 import { generateId } from '../constants'
 import { isSameDay } from '../components/ui/date-utils'
 import { getBookMeDisplayIdentity } from '../lib/book-me-identity'
+import { UserAccountMenu } from '../components/UserAccountMenu'
 
 function getGreeting(): string {
   const hour = new Date().getHours()
@@ -1272,13 +1273,7 @@ export default function AssistantPage() {
             <Home className="w-3 h-3" /> Back to Assistant
           </button>
         )}
-        <div className="hidden h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-gray-300 bg-gray-200 text-xs font-bold md:flex">
-          {headerIdentity.displayImageUrl ? (
-            <img src={headerIdentity.displayImageUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-          ) : (
-            headerIdentity.displayName.slice(0, 2).toUpperCase()
-          )}
-        </div>
+        <UserAccountMenu variant="light" />
       </header>
 
       <div className="flex-1 flex flex-col items-center justify-center pb-[10vh] relative z-10">

@@ -43,7 +43,11 @@ function resolveGuestUserIdForBooking(params: {
   if (cu?.id && cu.id !== hostUserId && cu.email) {
     if (trimmed.toLowerCase() === cu.email.trim().toLowerCase()) return cu.id
   }
-  if (emailLookup?.found && emailLookup.userId) return emailLookup.userId
+  // Directory lookup must not resolve to the host — same user would get two DS events
+  // (host "with …" + guest "(booked)") in one calendar when booking your own link.
+  if (emailLookup?.found && emailLookup.userId && emailLookup.userId !== hostUserId) {
+    return emailLookup.userId
+  }
   return undefined
 }
 

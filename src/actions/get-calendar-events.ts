@@ -31,7 +31,8 @@ export const getCalendarEvents: ActionHandler = async (ctx) => {
   const eventsResult = await ctx.tools.query(userScope, 'events', {})
   const eventRecords = (eventsResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
 
-  const events: Array<{ start: string; end: string; title: string }> = []
+  // Collect with sourceRef for deduplication
+  const rawEvents: Array<{ start: string; end: string; title: string; sourceRef: string }> = []
   for (const record of eventRecords) {
     const eventStart = record.data.StartTime as string
     const eventEnd = record.data.EndTime as string
@@ -46,13 +47,23 @@ export const getCalendarEvents: ActionHandler = async (ctx) => {
     if (record.data.AllDay === 1) continue
 
     if (eStart < rangeEnd && eEnd > rangeStart) {
-      events.push({
+      rawEvents.push({
         start: eStart.toISOString(),
         end: eEnd.toISOString(),
         title,
+        sourceRef: typeof record.data.SourceRef === 'string' ? record.data.SourceRef : '',
       })
     }
   }
+
+  // Deduplicate: if the same start time has both a host booking event (book-me:booking) and a guest
+  // booking event (book-me:guest-booking), only keep the host one to avoid showing the same meeting twice.
+  const hostBookingStarts = new Set(
+    rawEvents.filter(e => e.sourceRef === 'book-me:booking').map(e => e.start)
+  )
+  const events = rawEvents
+    .filter(e => !(e.sourceRef === 'book-me:guest-booking' && hostBookingStarts.has(e.start)))
+    .map(({ start, end, title }) => ({ start, end, title }))
 
   return {
     success: true,

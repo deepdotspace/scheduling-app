@@ -391,11 +391,11 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     }
   }
 
-  // 7b. If guestUserId provided, create a calendar event in guest's user DO
-  if (guestUserId) {
+  // 7b. If guestUserId provided (and distinct from host), create a calendar event in guest's user DO
+  if (guestUserId && guestUserId !== hostUserId) {
     try {
       await ctx.tools.create(`user:${guestUserId}`, 'events', {
-        Title: `${eventTitle} (booked)`,
+        Title: `${eventTitle} with ${hostDisplayName || 'Host'}`,
         Description: description ?? '',
         StartTime: start.toISOString(),
         EndTime: end.toISOString(),

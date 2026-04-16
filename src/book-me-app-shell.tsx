@@ -7,18 +7,13 @@ import { useLocation, Link, Outlet } from 'react-router-dom'
 import { CalendarCheck, Video, LayoutDashboard, Sparkles, Clock } from 'lucide-react'
 import { LeaveWizardProvider } from './context/LeaveWizardContext'
 import { GuardedLink } from './components/GuardedLink'
-import { useUser, useUserLookup, signOut } from 'deepspace'
-import { getBookMeDisplayIdentity } from './lib/book-me-identity'
+import { useUser } from 'deepspace'
 import { BookMePlatformProvider } from './platform/BookMePlatformProvider'
 import { SidebarProvider, useSidebar } from './context/SidebarContext'
 import { useProfile, useBookings } from './hooks'
 import { formatTime } from './constants'
 import { ToastContainer } from './components/ui/ToastContainer'
-
-async function bookMeSignOut() {
-  await signOut()
-  window.location.assign('/')
-}
+import { UserAccountMenu } from './components/UserAccountMenu'
 
 const LayersIcon = () => (
   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -52,11 +47,6 @@ function Sidebar() {
   const setMobileMenuOpen = sidebar?.setMobileMenuOpen ?? (() => {})
   const isCollapsed = sidebar?.isCollapsed ?? false
   const setIsCollapsed = sidebar?.setIsCollapsed ?? (() => {})
-  const { user, isLoading: authLoading } = useUser()
-  const { profile } = useProfile()
-  const { getUser } = useUserLookup()
-  const roomSelf = user?.id ? getUser(user.id) : null
-  const { displayName, displayImageUrl } = getBookMeDisplayIdentity({ user, profile, roomSelf })
   const { upcomingBookings } = useBookings()
 
   const [nextMeetingListHidden, setNextMeetingListHidden] = useState(false)
@@ -96,16 +86,7 @@ function Sidebar() {
           <span className="text-lg font-black text-white tracking-tight italic truncate">Book Me</span>
         </Link>
         <div className="flex items-center gap-1 shrink-0">
-          {!authLoading && user && (
-            <button
-              type="button"
-              data-testid="bookme-mobile-sign-out"
-              onClick={bookMeSignOut}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider text-white/80 hover:text-white hover:bg-white/10"
-            >
-              Sign out
-            </button>
-          )}
+          <UserAccountMenu variant="dark" />
           <button
             type="button"
             className="p-2 hover:bg-white/10 rounded-lg transition-colors text-white"
@@ -288,70 +269,6 @@ function Sidebar() {
             </div>
           )}
         </nav>
-
-        {/* Account: DeepSpace platform pill often missing in local dev — always show Book Me account + sign-out here. */}
-        {!authLoading && user && (
-          <div
-            className={`mt-auto shrink-0 border-t border-white/10 py-3 ${
-              effectivelyCollapsed ? 'flex justify-center px-0' : 'px-3'
-            }`}
-          >
-            <div
-              className={`flex items-center gap-2 rounded-full bg-white/[0.08] border border-white/10 pl-1 pr-1 py-1 ${
-                effectivelyCollapsed ? 'justify-center px-0' : ''
-              }`}
-              data-testid="bookme-account-pill"
-            >
-              <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center overflow-hidden shrink-0">
-                {displayImageUrl ? (
-                  <img src={displayImageUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                ) : (
-                  <span className="text-[10px] font-bold text-white">{displayName.slice(0, 2).toUpperCase()}</span>
-                )}
-              </div>
-              {!effectivelyCollapsed && (
-                <span className="flex-1 min-w-0 text-[11px] font-bold text-white/90 truncate pr-1" title={displayName}>
-                  {displayName}
-                </span>
-              )}
-              <button
-                type="button"
-                data-testid="bookme-sidebar-sign-out"
-                onClick={bookMeSignOut}
-                className={`shrink-0 rounded-full bg-white/15 hover:bg-white/25 text-[10px] font-bold uppercase tracking-tighter text-white px-2 py-1.5 ${
-                  effectivelyCollapsed ? 'px-1.5' : ''
-                }`}
-                title="Sign out"
-              >
-                {effectivelyCollapsed ? 'Out' : 'Sign out'}
-              </button>
-            </div>
-          </div>
-        )}
-        {!authLoading && !user && (
-          <div
-            className={`mt-auto shrink-0 border-t border-white/10 py-3 ${
-              effectivelyCollapsed ? 'flex justify-center px-0' : 'px-3'
-            }`}
-          >
-            <a
-              data-testid="bookme-sidebar-sign-in"
-              href="/api/auth/social-redirect?provider=google"
-              className={`flex items-center justify-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-center text-[11px] font-bold uppercase tracking-wider text-white transition-colors hover:bg-white/20 ${
-                effectivelyCollapsed ? 'px-2' : ''
-              }`}
-              title="Sign in with Google"
-            >
-              {effectivelyCollapsed ? (
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
-                </svg>
-              ) : (
-                'Sign in'
-              )}
-            </a>
-          </div>
-        )}
       </aside>
     </>
   )
@@ -360,9 +277,6 @@ function Sidebar() {
 function BookMeInner({ children }: { children: ReactNode }) {
   const { user, isLoading } = useUser()
   const { profile, updateProfile, ready } = useProfile()
-  const { getUser } = useUserLookup()
-  const roomSelf = user?.id ? getUser(user.id) : null
-  const { displayName, displayImageUrl } = getBookMeDisplayIdentity({ user, profile, roomSelf })
 
   useEffect(() => {
     if (user && (!profile || !profile.username) && ready) {
@@ -395,28 +309,8 @@ function BookMeInner({ children }: { children: ReactNode }) {
         className="min-h-screen overflow-auto bg-background custom-scrollbar max-lg:pt-[var(--mobile-header-height,0px)]"
       >
         {user && (
-          <div
-            className="fixed top-3 right-3 z-[100001] flex items-center gap-2 rounded-full border border-gray-200 bg-white/95 backdrop-blur-sm shadow-md pl-1 pr-2 py-1 max-w-[min(100vw-1.5rem,280px)]"
-            data-testid="bookme-fullscreen-account-pill"
-          >
-            <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden shrink-0">
-              {displayImageUrl ? (
-                <img src={displayImageUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                <span className="text-[11px] font-bold text-gray-700">{displayName.slice(0, 2).toUpperCase()}</span>
-              )}
-            </div>
-            <span className="text-xs font-semibold text-gray-900 truncate min-w-0 flex-1" title={displayName}>
-              {displayName}
-            </span>
-            <button
-              type="button"
-              data-testid="bookme-fullscreen-sign-out"
-              onClick={bookMeSignOut}
-              className="shrink-0 rounded-full bg-gray-900 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-white hover:bg-gray-800"
-            >
-              Sign out
-            </button>
+          <div className="fixed top-3 right-3 z-[100001]" data-testid="bookme-fullscreen-account-pill">
+            <UserAccountMenu variant="light" />
           </div>
         )}
         {children}
