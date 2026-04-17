@@ -152,7 +152,7 @@ export function useGoogleConnector() {
     try {
       setIsDisconnecting(true)
       setError(null)
-      await integration.delete('google-disconnect', {})
+      await integration.delete('oauth/google/disconnect', {})
       await refreshStatus()
       return true
     } catch (err) {

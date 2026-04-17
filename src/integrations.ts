@@ -20,8 +20,7 @@ export const integrations: Record<string, { billing: 'developer' | 'user' }> = {
   google: { billing: 'user' },
 
   status: { billing: 'user' },
-  /** Legacy path if still routed by api-worker */
-  'google-disconnect': { billing: 'user' },
+  'oauth': { billing: 'user' },
   'send-email': { billing: 'user' },
   'booking-create-event': { billing: 'developer' },
 }
