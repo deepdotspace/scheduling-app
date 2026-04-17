@@ -5,6 +5,7 @@
  * Validates the new time against availability and conflicts.
  */
 import type { ActionHandler } from 'deepspace/worker'
+import type { BookMeActionTools } from '../types/book-me-tools'
 import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData } from '../lib/dir-mail-booking-notify'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 import { buildRescheduleEmailSend } from '../lib/booking-email-templates'
@@ -114,6 +115,30 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     }
   } catch (err) {
     console.warn('[reschedule-booking] Failed to check DeepSpace calendar conflicts:', err)
+  }
+
+  // Check for conflicts against host's deepspace calendar app
+  try {
+    const res = await (ctx.tools as BookMeActionTools).calendarApp('/internal/busy-times', {
+      userId: hostUserId,
+      timeMin: newStart.toISOString(),
+      timeMax: newEnd.toISOString(),
+    })
+    if (res) {
+      const json = (await res.json()) as { busyTimes?: Array<{ start: string; end: string }> }
+      if (Array.isArray(json.busyTimes)) {
+        const hasCalConflict = json.busyTimes.some(b => {
+          const bStart = new Date(b.start)
+          const bEnd = new Date(b.end)
+          return newStart < bEnd && newEnd > bStart
+        })
+        if (hasCalConflict) {
+          return { success: false, error: 'New time conflicts with an existing calendar event' }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[reschedule-booking] DS calendar conflict check failed:', err)
   }
 
   // Check for conflicts against host's Google Calendar (FreeBusy)

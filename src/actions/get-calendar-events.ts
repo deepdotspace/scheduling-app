@@ -5,6 +5,7 @@
  * events so the booking UI can show “Your Schedule” with event names.
  */
 import type { ActionHandler } from 'deepspace/worker'
+import type { BookMeActionTools } from '../types/book-me-tools'
 
 export const getCalendarEvents: ActionHandler = async (ctx) => {
   const { userId, dateStart, dateEnd } = ctx.params as {
@@ -28,7 +29,20 @@ export const getCalendarEvents: ActionHandler = async (ctx) => {
   }
 
   const userScope = `user:${userId}`
-  const eventsResult = await ctx.tools.query(userScope, 'events', {})
+
+  // Fetch from book2me's own DO and from the deepspace calendar app in parallel
+  const [eventsResult, calendarRes] = await Promise.all([
+    ctx.tools.query(userScope, 'events', {}),
+    (ctx.tools as BookMeActionTools).calendarApp('/internal/calendar-events', {
+      userId,
+      dateStart,
+      dateEnd,
+    }).catch((err) => {
+      console.warn('[get-calendar-events] DS calendar fetch failed:', err)
+      return null
+    }),
+  ])
+
   const eventRecords = (eventsResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
 
   // Collect with sourceRef for deduplication
@@ -61,9 +75,33 @@ export const getCalendarEvents: ActionHandler = async (ctx) => {
   const hostBookingStarts = new Set(
     rawEvents.filter(e => e.sourceRef === 'book-me:booking').map(e => e.start)
   )
-  const events = rawEvents
+  const localEvents = rawEvents
     .filter(e => !(e.sourceRef === 'book-me:guest-booking' && hostBookingStarts.has(e.start)))
-    .map(({ start, end, title }) => ({ start, end, title }))
+    .map(({ start, end, title }) => ({ start, end, title, source: 'deepspace' as const }))
+
+  // Merge in deepspace calendar app events, deduplicating by (start, end) to avoid double-counting
+  // events that were already synced into the book2me shadow collection.
+  const localStartEnds = new Set(localEvents.map(e => `${e.start}|${e.end}`))
+  let calendarAppEvents: Array<{ start: string; end: string; title: string; source: 'deepspace' }> = []
+  if (calendarRes) {
+    try {
+      const json = (await calendarRes.json()) as { events?: Array<{ start: string; end: string; title: string }> }
+      console.log(`[get-calendar-events] DS calendar returned ${json.events?.length ?? 0} events for user ${userId}`)
+      if (Array.isArray(json.events)) {
+        calendarAppEvents = json.events
+          .filter(e => !localStartEnds.has(`${e.start}|${e.end}`))
+          .map(e => ({ ...e, source: 'deepspace' as const }))
+      }
+    } catch (err) {
+      console.warn('[get-calendar-events] Failed to parse DS calendar response:', err)
+    }
+  } else {
+    console.log('[get-calendar-events] DS calendar unreachable (no CALENDAR_WORKER binding nor CALENDAR_WORKER_URL)')
+  }
+
+  const events = [...localEvents, ...calendarAppEvents].sort(
+    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
+  )
 
   return {
     success: true,

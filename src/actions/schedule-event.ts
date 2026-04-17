@@ -13,6 +13,7 @@
  *  5. Send cross-app notifications (Slack channel + mail DM)
  */
 import type { ActionHandler } from 'deepspace/worker'
+import type { BookMeActionTools } from '../types/book-me-tools'
 import { createDirMailBookingNotification } from '../lib/dir-mail-booking-notify'
 import { formatDualPartyTimeRangeForDm } from '../lib/email-datetime-format'
 import { formatYmdInTimezone } from '../lib/zoned-time'
@@ -256,7 +257,31 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     console.warn('[schedule-event] Failed to check calendar conflicts:', err)
   }
 
-  // 5c. Check for conflicts against host's Google Calendar (FreeBusy)
+  // 5c. Check for conflicts against host's deepspace calendar app
+  try {
+    const res = await (ctx.tools as BookMeActionTools).calendarApp('/internal/busy-times', {
+      userId: hostUserId,
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+    })
+    if (res) {
+      const json = (await res.json()) as { busyTimes?: Array<{ start: string; end: string }> }
+      if (Array.isArray(json.busyTimes)) {
+        const hasCalConflict = json.busyTimes.some(b => {
+          const bStart = new Date(b.start)
+          const bEnd = new Date(b.end)
+          return start < bEnd && end > bStart
+        })
+        if (hasCalConflict) {
+          return { success: false, error: 'Time slot conflicts with an existing calendar event' }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[schedule-event] DS calendar conflict check failed:', err)
+  }
+
+  // 5d. Check for conflicts against host's Google Calendar (FreeBusy)
   try {
     const dayStart = new Date(start)
     dayStart.setUTCHours(0, 0, 0, 0)

@@ -38,6 +38,7 @@ import { handler as cronTaskHandler } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
+import type { BookMeActionTools } from './src/types/book-me-tools.js'
 
 // =============================================================================
 // DO Manifest — declares all Durable Objects for dynamic deploy bindings
@@ -81,6 +82,10 @@ interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   /** Production service binding; local dev uses `API_WORKER_URL` from `.dev.vars` instead. */
   API_WORKER?: Fetcher
   API_WORKER_URL?: string
+  /** Service binding to the deepspace calendar worker; absent in local dev. */
+  CALENDAR_WORKER?: Fetcher
+  /** HTTP base URL for the calendar worker; used in local dev when CALENDAR_WORKER binding is absent. */
+  CALENDAR_WORKER_URL?: string
   AUTH_JWT_PUBLIC_KEY: string
   AUTH_JWT_ISSUER: string
   AUTH_WORKER_URL: string
@@ -129,6 +134,30 @@ async function apiWorkerFetch(env: Env, dummyUrl: string, init?: RequestInit): P
       headers: { 'Content-Type': 'application/json' },
     }),
   )
+}
+
+/**
+ * Calendar worker: production uses the `CALENDAR_WORKER` service binding.
+ * Local dev falls back to `CALENDAR_WORKER_URL` (set in .dev.vars).
+ * Returns null when neither is configured.
+ */
+async function calendarWorkerFetch(env: Env, path: string, body: unknown): Promise<Response | null> {
+  const init: RequestInit = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-app-identity-token': env.APP_IDENTITY_TOKEN ?? '',
+    },
+    body: JSON.stringify(body),
+  }
+  if (env.CALENDAR_WORKER) {
+    return env.CALENDAR_WORKER.fetch(new Request(`https://calendar-worker${path}`, init))
+  }
+  if (env.CALENDAR_WORKER_URL) {
+    const target = `${env.CALENDAR_WORKER_URL.replace(/\/$/, '')}${path}`
+    return fetch(target, init)
+  }
+  return null
 }
 
 /**
@@ -509,7 +538,7 @@ app.get('*', async (c) => {
 // Action Tools — route to app's own RecordRoom DO
 // =============================================================================
 
-function createActionTools(env: Env, userId: string, callerJwt: string): ActionTools {
+function createActionTools(env: Env, userId: string, callerJwt: string): BookMeActionTools {
   async function execTool(tool: string, params: Record<string, unknown>): Promise<ActionResult> {
     // Route to the correct DO instance based on scopeId (e.g. user:{id} vs app:{name}).
     const targetScope = (params.scopeId as string) || `app:${env.APP_NAME}`
@@ -572,6 +601,7 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
     get: (sid, collection, recordId) => execTool('records.get', { scopeId: sid, collection, recordId }),
     query: (sid, collection, options) => execTool('records.query', { scopeId: sid, collection, ...options }),
     integration: callIntegration,
+    calendarApp: (path, body) => calendarWorkerFetch(env, path, body),
   }
 }
 

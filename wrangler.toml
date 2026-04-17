@@ -26,6 +26,10 @@ bindings = [
 binding = "FILES"
 bucket_name = "book2me-files"
 
+[[services]]
+binding = "CALENDAR_WORKER"
+service = "calendar-tmp"
+
 [vars]
 APP_NAME = "book2me"
 # Same host as deepspace client `PROD_CONFIG.platformWorkerUrl` — used when `PLATFORM_WORKER` service binding is absent (local dev).
@@ -34,6 +38,10 @@ PLATFORM_WORKER_URL = "https://deepspace-platform-worker.eudaimonicincorporated.
 BOOKING_EMAIL_FROM = "BookMe <book-me@updates.app.space>"
 # Skip Resend / `email/send` (set false or remove when you wire transactional email again).
 DISABLE_BOOKING_EMAIL = "false"
+# Local dev: book2me reaches the calendar worker via HTTP fallback. In production the CALENDAR_WORKER service binding takes precedence and this is ignored.
+CALENDAR_WORKER_URL = "http://localhost:8781"
+# Dev-only default. In production, `wrangler secret put APP_IDENTITY_TOKEN` overrides this with the real shared secret.
+APP_IDENTITY_TOKEN = "dev-calendar-bridge"
 
 [dev]
 port = 8780
@@ -45,3 +53,4 @@ inspector_port = 9237
 #   AUTH_WORKER_URL
 #   OWNER_USER_ID
 #   INTERNAL_STORAGE_HMAC_SECRET
+#   APP_IDENTITY_TOKEN   — must match the same value set on the calendar-tmp worker

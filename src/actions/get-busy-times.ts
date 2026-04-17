@@ -10,6 +10,7 @@
  * existing calendar events.
  */
 import type { ActionHandler } from 'deepspace/worker'
+import type { BookMeActionTools } from '../types/book-me-tools'
 
 interface BusyInterval {
   start: string
@@ -80,7 +81,24 @@ export const getBusyTimes: ActionHandler = async (ctx) => {
     }
   }
 
-  // 2. Google Calendar FreeBusy (via app worker integration proxy)
+  // 2. Deepspace calendar app (via service binding to calendar worker)
+  let calendarAppBusy: BusyInterval[] = []
+  try {
+    const res = await (ctx.tools as BookMeActionTools).calendarApp('/internal/busy-times', {
+      userId: hostUserId,
+      timeMin: dateStart,
+      timeMax: dateEnd,
+    })
+    if (res) {
+      const json = (await res.json()) as { busyTimes?: BusyInterval[] }
+      if (Array.isArray(json.busyTimes)) calendarAppBusy = json.busyTimes
+      console.log(`[get-busy-times] DS calendar: ${calendarAppBusy.length} busy intervals`)
+    }
+  } catch (err) {
+    console.warn('[get-busy-times] DS calendar fetch failed (skipping):', err)
+  }
+
+  // 3. Google Calendar FreeBusy (via app worker integration proxy)
   let googleBusy: BusyInterval[] = []
   try {
     const raw = await ctx.tools.integration('booking-host-freebusy', {
@@ -102,8 +120,8 @@ export const getBusyTimes: ActionHandler = async (ctx) => {
     console.warn('[get-busy-times] Google FreeBusy failed (falling back to DS-only):', err)
   }
 
-  // 3. Merge and coalesce
-  const busyTimes = mergeAndCoalesce(dsBusy, googleBusy)
+  // 4. Merge and coalesce all three sources
+  const busyTimes = mergeAndCoalesce([...dsBusy, ...calendarAppBusy], googleBusy)
 
   return {
     success: true,
