@@ -86,11 +86,11 @@ test.describe('Booking Confirmation', () => {
 
     await expect(page.locator('text=Booking Confirmed!')).toBeVisible({ timeout: 30_000 })
 
-    const meetingLink = page.locator('a[href*="meet.app.space/call/"]')
+    const meetingLink = page.locator('a[href*="video-call.app.space/call/"]')
     await expect(meetingLink).toBeVisible({ timeout: 5_000 })
 
     const href = await meetingLink.getAttribute('href')
-    expect(href).toMatch(/^https:\/\/meet\.app\.space\/call\/[a-z0-9]{4}-[a-z0-9]{4}$/)
+    expect(href).toMatch(/^https:\/\/video-call\.app\.space\/call\/[a-z0-9]{4}-[a-z0-9]{4}$/)
 
     const linkText = await meetingLink.textContent()
     expect(linkText).toBe(href)

@@ -17,7 +17,7 @@ export const APP_NAME = 'book2me'
 export const SCOPE_ID = `app:${APP_NAME}`
 
 /** DeepSpace video call base URL */
-export const VIDEO_CALL_BASE_URL = 'https://meet.app.space'
+export const VIDEO_CALL_BASE_URL = 'https://video-call.app.space'
 
 /**
  * Canonical URL for a DeepSpace video call room (pre-join / join flow).
