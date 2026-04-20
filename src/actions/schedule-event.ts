@@ -384,9 +384,35 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     return calendarResult
   }
 
-  // 7a. Store the host calendar event ID back into the booking so reschedule can update it later
+  // 7a. Store the host calendar event ID back into the booking so reschedule can update it later.
+  //     Also call the calendar app to create a mirrored event in its own RECORD_ROOMS DO.
   const hostCalendarEventRecordId = (calendarResult.data as { record?: { recordId: string } })?.record?.recordId
   const bookingRecordId = (bookingResult.data as { recordId?: string })?.recordId
+
+  // Push the booking block into the calendar app's RECORD_ROOMS for the host.
+  let calendarAppEventId = ''
+  try {
+    const calAppRes = await (ctx.tools as BookMeActionTools).calendarApp('/internal/create-event', {
+      userId: hostUserId,
+      title: `${eventTitle} with ${guestName}`,
+      description: description ?? '',
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      sourceRef: 'book-me:booking',
+      metadata: JSON.stringify({ guestEmail, guestName, bookedBy: ctx.userId, eventTypeId }),
+    })
+    if (calAppRes) {
+      const calAppJson = (await calAppRes.json()) as { success?: boolean; eventId?: string }
+      if (calAppJson.success && calAppJson.eventId) {
+        calendarAppEventId = calAppJson.eventId
+      } else {
+        console.warn('[schedule-event] calendar app create-event returned non-success:', calAppJson)
+      }
+    }
+  } catch (err) {
+    console.warn('[schedule-event] Failed to create event in calendar app:', err)
+  }
+
   if (hostCalendarEventRecordId && bookingRecordId) {
     try {
       await ctx.tools.update(APP_SCOPE, 'bookings', bookingRecordId, {
@@ -408,6 +434,7 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
         additionalInfo: additionalInfo ?? '',
         answers: answers ?? {},
         calendarEventId: hostCalendarEventRecordId,
+        calendarAppEventId,
         ...(guestTimezone ? { guestTimezone } : {}),
         hostTimezone,
       })
@@ -417,6 +444,7 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
   }
 
   // 7b. If guestUserId provided (and distinct from host), create a calendar event in guest's user DO
+  //     and mirror it into the calendar app as well.
   if (guestUserId && guestUserId !== hostUserId) {
     try {
       await ctx.tools.create(`user:${guestUserId}`, 'events', {
@@ -436,6 +464,29 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
       })
     } catch (err) {
       console.warn('[schedule-event] Failed to create guest calendar event:', err)
+    }
+
+    // Mirror into calendar app for the guest.
+    try {
+      const calAppRes = await (ctx.tools as BookMeActionTools).calendarApp('/internal/create-event', {
+        userId: guestUserId,
+        title: `${eventTitle} with ${hostDisplayName || 'Host'}`,
+        description: description ?? '',
+        startTime: start.toISOString(),
+        endTime: end.toISOString(),
+        sourceRef: 'book-me:guest-booking',
+        metadata: JSON.stringify({ hostUserId, guestEmail, guestName, eventTypeId }),
+      })
+      if (!calAppRes) {
+        console.warn('[schedule-event] calendar app unavailable for guest event mirror')
+      } else {
+        const calAppJson = (await calAppRes.json()) as { success?: boolean; eventId?: string }
+        if (!calAppJson.success) {
+          console.warn('[schedule-event] calendar app guest create-event failed:', calAppJson)
+        }
+      }
+    } catch (err) {
+      console.warn('[schedule-event] Failed to mirror guest event in calendar app:', err)
     }
   }
 

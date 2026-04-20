@@ -76,6 +76,7 @@ export const bookingsSchema: CollectionSchema = {
     { name: 'status', storage: 'text', interpretation: 'plain' },
     { name: 'cancelToken', storage: 'text', interpretation: 'plain' },
     { name: 'calendarEventId', storage: 'text', interpretation: 'plain' },
+    { name: 'calendarAppEventId', storage: 'text', interpretation: 'plain' },
     { name: 'remindersSent', storage: 'text', interpretation: json },
     { name: 'seriesId', storage: 'text', interpretation: 'plain' },
     { name: 'recurrence', storage: 'text', interpretation: 'plain' },

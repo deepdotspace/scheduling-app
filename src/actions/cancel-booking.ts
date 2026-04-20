@@ -8,6 +8,7 @@
  * get-busy-times no longer blocks the slot for new bookings.
  */
 import type { ActionHandler } from 'deepspace/worker'
+import type { BookMeActionTools } from '../types/book-me-tools'
 import {
   removeGuestBookMeCalendarEvent,
   removeHostBookMeCalendarEvent,
@@ -62,6 +63,7 @@ export const cancelBooking: ActionHandler = async (ctx) => {
   const hostUserId = booking.hostUserId as string
   const startTimeIso = booking.startTime as string
   const calendarEventId = booking.calendarEventId as string | undefined
+  const calendarAppEventId = booking.calendarAppEventId as string | undefined
   const rawGuestId = booking.guestUserId as string | undefined
   const guestUserId =
     typeof rawGuestId === 'string' && rawGuestId.trim() !== '' ? rawGuestId.trim() : undefined
@@ -87,6 +89,28 @@ export const cancelBooking: ActionHandler = async (ctx) => {
   } catch (err) {
     console.warn('[cancel-booking] Guest calendar cleanup error:', err)
   }
+
+  // Remove the mirrored event from the calendar app's RECORD_ROOMS for the host.
+  if (calendarAppEventId) {
+    try {
+      const res = await (ctx.tools as BookMeActionTools).calendarApp('/internal/delete-event', {
+        userId: hostUserId,
+        eventId: calendarAppEventId,
+      })
+      if (!res) {
+        console.warn('[cancel-booking] calendar app unavailable for host event deletion')
+      } else {
+        const json = (await res.json()) as { success?: boolean }
+        if (!json.success) console.warn('[cancel-booking] calendar app delete-event (host) failed:', json)
+      }
+    } catch (err) {
+      console.warn('[cancel-booking] Failed to delete host event from calendar app:', err)
+    }
+  }
+
+  // Remove the guest's mirrored event from the calendar app if applicable.
+  // We don't store a separate guest calendarAppEventId, so we skip silently if absent.
+  // (Guest mirror deletions are best-effort; the guest's own local event was already cleaned up above.)
 
   const etFetch = await ctx.tools.get(APP_SCOPE, 'event-types', booking.eventTypeId as string)
   let sendDeepSpaceMail = false

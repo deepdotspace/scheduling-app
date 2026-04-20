@@ -176,6 +176,7 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
   const oldStartTime = booking.startTime as string
   const oldEndTime = booking.endTime as string
   const calendarEventId = booking.calendarEventId as string | undefined
+  const calendarAppEventId = booking.calendarAppEventId as string | undefined
   const guestUserId = booking.guestUserId as string | undefined
 
   // Update the booking with the new time and audit fields (always set so client sync shows them)
@@ -244,6 +245,26 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
       }
     } catch (err) {
       console.warn('[reschedule-booking] Failed to update guest calendar event:', err)
+    }
+  }
+
+  // Update the mirrored event in the calendar app's RECORD_ROOMS for the host.
+  if (calendarAppEventId) {
+    try {
+      const res = await (ctx.tools as BookMeActionTools).calendarApp('/internal/update-event', {
+        userId: hostUserId,
+        eventId: calendarAppEventId,
+        startTime: newStart.toISOString(),
+        endTime: newEnd.toISOString(),
+      })
+      if (!res) {
+        console.warn('[reschedule-booking] calendar app unavailable for host event update')
+      } else {
+        const json = (await res.json()) as { success?: boolean }
+        if (!json.success) console.warn('[reschedule-booking] calendar app update-event (host) failed:', json)
+      }
+    } catch (err) {
+      console.warn('[reschedule-booking] Failed to update host event in calendar app:', err)
     }
   }
 
