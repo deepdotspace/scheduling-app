@@ -1,7 +1,7 @@
 /**
  * undo-booking-no-show — Host reverts a no-show back to confirmed.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 
 export const undoBookingNoShow: ActionHandler = async (ctx) => {

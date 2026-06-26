@@ -31,6 +31,30 @@ function toBool(val: unknown, defaultValue: boolean): boolean {
   return defaultValue
 }
 
+/** Build the RecordRoom storage payload from a fully-resolved event type. */
+function toEventRecordData(et: Omit<EventType, 'id' | 'createdAt'>) {
+  return {
+    userId: et.userId,
+    title: et.title,
+    description: et.description,
+    duration: et.duration,
+    location: et.location,
+    isActive: et.isActive,
+    color: et.color,
+    sendDeepSpaceMail: et.sendDeepSpaceMail,
+    sendGcalInvite: et.sendGoogleCalendarInvite,
+    sendExternalEmail: et.sendExternalEmail,
+    bufferBefore: et.bufferBefore,
+    bufferAfter: et.bufferAfter,
+    durations: wrapArray(et.durations),
+    availabilityScheduleId: et.availabilityScheduleId,
+    bookingQuestions: wrapArray(et.bookingQuestions),
+    maxAttendees: et.maxAttendees,
+    isRoundRobin: et.isRoundRobin,
+    teamMemberIds: wrapArray(et.teamMemberIds),
+  }
+}
+
 interface UseEventTypesReturn {
   eventTypes: EventType[]
   createEventType: (eventType: Omit<EventType, 'id' | 'userId' | 'createdAt'>) => EventType
@@ -60,7 +84,7 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
   }, [targetUserId])
 
   const { records, status } = useQuery<EventType>('event-types', queryOptions)
-  const { create, put, remove } = useMutations<any>('event-types')
+  const { put, remove } = useMutations<any>('event-types')
 
   // Map records to EventType objects
   const eventTypes = useMemo((): EventType[] => {
@@ -106,7 +130,7 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
     const sendGoogleCalendarInvite = data.sendGoogleCalendarInvite ?? false
 
     // Use put with our id so the stored recordId matches what we return (required for booking links)
-    put(id, {
+    put(id, toEventRecordData({
       userId: user.id,
       title: data.title,
       description: data.description,
@@ -115,17 +139,17 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
       isActive: data.isActive,
       color,
       sendDeepSpaceMail,
-      sendGcalInvite: sendGoogleCalendarInvite,
+      sendGoogleCalendarInvite,
       sendExternalEmail: data.sendExternalEmail ?? true,
       bufferBefore: data.bufferBefore ?? 0,
       bufferAfter: data.bufferAfter ?? 0,
-      durations: wrapArray(data.durations ?? []),
+      durations: data.durations ?? [],
       availabilityScheduleId: data.availabilityScheduleId ?? '',
-      bookingQuestions: wrapArray(data.bookingQuestions ?? []),
+      bookingQuestions: data.bookingQuestions ?? [],
       maxAttendees: data.maxAttendees ?? 0,
       isRoundRobin: data.isRoundRobin ?? false,
-      teamMemberIds: wrapArray(data.teamMemberIds ?? []),
-    })
+      teamMemberIds: data.teamMemberIds ?? [],
+    }))
 
     return {
       ...data,
@@ -146,7 +170,7 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
     const eventType = eventTypes.find(et => et.id === id)
     if (!eventType) return
 
-    put(id, {
+    put(id, toEventRecordData({
       userId: eventType.userId,
       title: updates.title ?? eventType.title,
       description: updates.description ?? eventType.description,
@@ -155,17 +179,17 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
       isActive: updates.isActive ?? eventType.isActive,
       color: updates.color ?? eventType.color,
       sendDeepSpaceMail: updates.sendDeepSpaceMail ?? eventType.sendDeepSpaceMail,
-      sendGcalInvite: updates.sendGoogleCalendarInvite ?? eventType.sendGoogleCalendarInvite,
+      sendGoogleCalendarInvite: updates.sendGoogleCalendarInvite ?? eventType.sendGoogleCalendarInvite,
       sendExternalEmail: updates.sendExternalEmail ?? eventType.sendExternalEmail,
       bufferBefore: updates.bufferBefore ?? eventType.bufferBefore,
       bufferAfter: updates.bufferAfter ?? eventType.bufferAfter,
-      durations: wrapArray(updates.durations ?? eventType.durations),
+      durations: updates.durations ?? eventType.durations,
       availabilityScheduleId: updates.availabilityScheduleId ?? eventType.availabilityScheduleId,
-      bookingQuestions: wrapArray(updates.bookingQuestions ?? eventType.bookingQuestions),
+      bookingQuestions: updates.bookingQuestions ?? eventType.bookingQuestions,
       maxAttendees: updates.maxAttendees ?? eventType.maxAttendees,
       isRoundRobin: updates.isRoundRobin ?? eventType.isRoundRobin,
-      teamMemberIds: wrapArray(updates.teamMemberIds ?? eventType.teamMemberIds),
-    })
+      teamMemberIds: updates.teamMemberIds ?? eventType.teamMemberIds,
+    }))
   }, [eventTypes, isOwner, put])
 
   const deleteEventType = useCallback((id: string) => {
@@ -185,26 +209,7 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
     const eventType = eventTypes.find(et => et.id === id)
     if (!eventType) return
 
-    put(id, {
-      userId: eventType.userId,
-      title: eventType.title,
-      description: eventType.description,
-      duration: eventType.duration,
-      location: eventType.location,
-      isActive: !eventType.isActive,
-      color: eventType.color,
-      sendDeepSpaceMail: eventType.sendDeepSpaceMail,
-      sendGcalInvite: eventType.sendGoogleCalendarInvite,
-      sendExternalEmail: eventType.sendExternalEmail,
-      bufferBefore: eventType.bufferBefore,
-      bufferAfter: eventType.bufferAfter,
-      durations: wrapArray(eventType.durations),
-      availabilityScheduleId: eventType.availabilityScheduleId,
-      bookingQuestions: wrapArray(eventType.bookingQuestions),
-      maxAttendees: eventType.maxAttendees,
-      isRoundRobin: eventType.isRoundRobin,
-      teamMemberIds: wrapArray(eventType.teamMemberIds),
-    })
+    put(id, toEventRecordData({ ...eventType, isActive: !eventType.isActive }))
   }, [eventTypes, isOwner, put])
 
   const getEventType = useCallback((id: string): EventType | undefined => {

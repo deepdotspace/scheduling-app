@@ -104,7 +104,7 @@ export function AvailabilityPreview({ availability, scheduleName, readOnly }: Av
               <span className={`text-xs font-semibold ${active ? 'text-[var(--color-app-text)]' : 'text-[var(--color-app-text-muted)]'}`}>
                 {DAY_LABELS[day]}
               </span>
-              <span className={`text-xs ${active ? 'text-[var(--color-app-text-muted)]' : 'text-[var(--color-app-text-muted)]'}`}>
+              <span className="text-xs text-[var(--color-app-text-muted)]">
                 {active ? settings.blocks.map(b => `${formatTimeShort(b.startTime)}–${formatTimeShort(b.endTime)}`).join(', ') : 'Off'}
               </span>
             </div>

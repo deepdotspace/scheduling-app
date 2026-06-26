@@ -2,7 +2,7 @@
  * Send transactional mail via DeepSpace api-worker integration `email/send`
  * (called from server actions with tools.integration).
  */
-import type { ActionTools } from 'deepspace/worker'
+import type { ActionTools } from './action-types'
 import type { TransactionalEmailSend } from './booking-email-templates'
 
 const ENDPOINT = 'email/send'

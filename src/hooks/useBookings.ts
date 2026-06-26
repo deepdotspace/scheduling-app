@@ -7,8 +7,7 @@
  */
 
 import { useCallback, useMemo } from 'react'
-import { useQuery, useMutations, useUser } from 'deepspace'
-import { getAuthToken } from 'deepspace'
+import { useQuery, useMutations, useUser, getAuthToken } from 'deepspace'
 import type { Booking } from '../constants'
 import { clearBookingRescheduleAudit } from '../lib/reschedule-audit-storage'
 
@@ -17,6 +16,23 @@ function readStringField(v: unknown): string | undefined {
   if (v === null || v === undefined) return undefined
   if (typeof v === 'string') return v
   return String(v)
+}
+
+/** POST a booking server action with the current auth token; returns the parsed result. */
+async function postBookingAction(
+  path: string,
+  bookingId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const token = await getAuthToken()
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ bookingId }),
+  })
+  return (await res.json()) as { success: boolean; error?: string }
 }
 
 /** Extended booking with role indicator */
@@ -123,16 +139,7 @@ export function useBookings(): UseBookingsReturn {
   }, [create])
 
   const cancelBooking = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/cancel-booking', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ bookingId: id }),
-    })
-    const result = (await res.json()) as { success: boolean; error?: string }
+    const result = await postBookingAction('/api/actions/cancel-booking', id)
     if (result.success) {
       clearBookingRescheduleAudit(id)
     }
@@ -140,42 +147,15 @@ export function useBookings(): UseBookingsReturn {
   }, [])
 
   const markBookingNoShow = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/mark-booking-no-show', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ bookingId: id }),
-    })
-    return (await res.json()) as { success: boolean; error?: string }
+    return postBookingAction('/api/actions/mark-booking-no-show', id)
   }, [])
 
   const undoBookingNoShow = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/undo-booking-no-show', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ bookingId: id }),
-    })
-    return (await res.json()) as { success: boolean; error?: string }
+    return postBookingAction('/api/actions/undo-booking-no-show', id)
   }, [])
 
   const deleteBookingPermanently = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/delete-booking', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ bookingId: id }),
-    })
-    const result = (await res.json()) as { success: boolean; error?: string }
+    const result = await postBookingAction('/api/actions/delete-booking', id)
     if (result.success) {
       clearBookingRescheduleAudit(id)
     }

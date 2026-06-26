@@ -9,7 +9,7 @@
  * Used by the booking page to exclude slots that conflict with the host's
  * existing calendar events.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 
 interface BusyInterval {
   start: string
@@ -74,6 +74,12 @@ export const getBusyTimes: ActionHandler = async (ctx) => {
     const eEnd = new Date(eventEnd)
     if (isNaN(eStart.getTime()) || isNaN(eEnd.getTime())) continue
     if (record.data.AllDay === 1) continue
+
+    // Skip the app's own booking mirrors. The slot picker already accounts for bookings (and group
+    // capacity) via the bookings collection; counting these mirrors as busy would hide group-event
+    // slots from co-attendees and double-count 1:1 bookings.
+    const sourceRef = record.data.SourceRef as string | undefined
+    if (sourceRef === 'book-me:booking' || sourceRef === 'book-me:guest-booking') continue
 
     if (eStart < rangeEnd && eEnd > rangeStart) {
       dsBusy.push({ start: eStart.toISOString(), end: eEnd.toISOString() })

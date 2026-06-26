@@ -17,7 +17,7 @@ interface ToastItem {
 
 // Module-level state for cross-component sharing
 let toasts: ToastItem[] = []
-let listeners: Set<() => void> = new Set()
+const listeners: Set<() => void> = new Set()
 
 function notify() {
   listeners.forEach(fn => fn())

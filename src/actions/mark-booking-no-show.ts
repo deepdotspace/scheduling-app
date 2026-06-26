@@ -4,7 +4,7 @@
  * Does not remove calendar events (meeting time has passed). Excluded from
  * “completed” analytics counts.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 
 export const markBookingNoShow: ActionHandler = async (ctx) => {

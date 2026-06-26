@@ -7,12 +7,12 @@
  * Also removes the linked platform calendar events (user:{id}/events) so
  * get-busy-times no longer blocks the slot for new bookings.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 import {
   removeGuestBookMeCalendarEvent,
   removeHostBookMeCalendarEvent,
 } from '../lib/booking-calendar-cleanup'
-import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData } from '../lib/dir-mail-booking-notify'
+import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData, getSendExternalEmailFromEventTypeData } from '../lib/dir-mail-booking-notify'
 import { buildCancellationEmailSend } from '../lib/booking-email-templates'
 import { sendTransactionalEmail } from '../lib/booking-email-server'
 
@@ -94,7 +94,7 @@ export const cancelBooking: ActionHandler = async (ctx) => {
   if (etFetch.success) {
     const etData = (etFetch.data as { record: { data: Record<string, unknown> } }).record.data
     sendDeepSpaceMail = getSendDeepSpaceMailFromEventTypeData(etData)
-    sendExternalEmail = (etData.sendExternalEmail as boolean) ?? true
+    sendExternalEmail = getSendExternalEmailFromEventTypeData(etData)
   }
 
   const eventTitle = (booking.eventTitle as string) ?? 'Meeting'

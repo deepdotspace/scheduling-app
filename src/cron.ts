@@ -9,8 +9,15 @@
  * Uses remindersSent (object) on booking records for deduplication:
  *   { "24h": true, "1h": true }
  */
-import type { CronContext } from 'deepspace/worker'
-import { formatEmailDateAndTimeRange } from './lib/email-datetime-format'
+import type { CronContext, CronTask } from 'deepspace/worker'
+import { buildReminderEmailSend } from './lib/booking-email-templates'
+
+/**
+ * Task schedule, read by {@link AppCronRoom} at construction time (deepspace
+ * 0.4.3 cron model — config lives in code, not cron.json). The DO validates
+ * these and self-schedules alarms; each fire dispatches through {@link handler}.
+ */
+export const tasks: CronTask[] = [{ name: 'send-reminders', intervalMinutes: 30 }]
 
 export async function handler(taskName: string, ctx: CronContext): Promise<void> {
   switch (taskName) {
@@ -27,83 +34,79 @@ async function sendReminders(ctx: CronContext): Promise<void> {
   })
 
   for (const booking of bookings) {
-    const startTime = new Date(booking.startTime as string).getTime()
+    // records.query returns { recordId, data: {...fields} } — booking fields live under .data.
+    const recordId = booking.recordId as string
+    const data = booking.data as Record<string, unknown>
+    if (!data) continue
+
+    const startTime = new Date(data.startTime as string).getTime()
     if (isNaN(startTime) || startTime <= now) continue
 
     const hoursUntil = (startTime - now) / (60 * 60 * 1000)
-    const remindersSent = (booking.remindersSent as Record<string, boolean>) ?? {}
+    const remindersSent = (data.remindersSent as Record<string, boolean>) ?? {}
 
-    // 24h reminder: send when 23-25 hours away
-    if (hoursUntil <= 25 && hoursUntil > 1.5 && !remindersSent['24h']) {
-      await sendReminderNotification(ctx, booking, '24h')
-      await ctx.records.update('bookings', booking.recordId as string, {
-        remindersSent: { ...remindersSent, '24h': true },
-      })
+    // 24h reminder: send when ~23-25 hours away (matches the 30-min cron cadence).
+    // Only mark as sent when delivery actually succeeded, so a transient failure retries next tick.
+    if (hoursUntil <= 25 && hoursUntil > 23 && !remindersSent['24h']) {
+      if (await sendReminderNotification(ctx, data, '24h')) {
+        await ctx.records.update('bookings', recordId, {
+          remindersSent: { ...remindersSent, '24h': true },
+        })
+      }
     }
 
-    // 1h reminder: send when 0.5-1.5 hours away
+    // 1h reminder: send when 0-1.5 hours away.
     if (hoursUntil <= 1.5 && hoursUntil > 0 && !remindersSent['1h']) {
-      await sendReminderNotification(ctx, booking, '1h')
-      await ctx.records.update('bookings', booking.recordId as string, {
-        remindersSent: { ...remindersSent, '1h': true },
-      })
+      if (await sendReminderNotification(ctx, data, '1h')) {
+        await ctx.records.update('bookings', recordId, {
+          remindersSent: { ...remindersSent, '1h': true },
+        })
+      }
     }
   }
 }
 
+/** Returns true when the reminder is considered handled (sent, or nothing to send). */
 async function sendReminderNotification(
   ctx: CronContext,
   booking: Record<string, unknown>,
   window: '24h' | '1h',
-): Promise<void> {
-  const timeLabel = window === '24h' ? 'tomorrow' : 'in 1 hour'
-  const eventTitle = booking.eventTitle as string
-  const guestName = booking.guestName as string
-  const hostUserId = booking.hostUserId as string
-  const meetingLink = (booking.meetingLink as string) ?? ''
-
-  const startIso = booking.startTime as string
-  const endIso = (booking.endTime as string) ?? startIso
-  const hostTz =
-    typeof booking.hostTimezone === 'string' && booking.hostTimezone.trim().length > 0
-      ? booking.hostTimezone.trim()
-      : 'UTC'
-  const slot = formatEmailDateAndTimeRange(startIso, endIso, hostTz)
-  const whenLines = [`Date: ${slot.dateLine}`, `Time: ${slot.timeLine}`].join('\n')
-
-  // Send DM notification to host via deepspace-mail directory
-  const mailDirScope = 'dir:mail'
-  const reminderBody = `Reminder: ${eventTitle} with ${guestName} is ${timeLabel}\n${whenLines}\n${meetingLink ? `Join: ${meetingLink}` : ''}`
+): Promise<boolean> {
+  // CronContext.records is bound to a single room (app:{name}) and cannot reach the dir:mail /
+  // conv:* scopes, so the previous in-app DM write always threw. Deliver the reminder by email
+  // to the host via the owner-billed email/send integration instead.
+  const hostEmail = (booking.hostEmail as string) ?? ''
+  const send = buildReminderEmailSend({
+    window,
+    hostName: (booking.hostName as string) ?? '',
+    hostEmail,
+    guestName: (booking.guestName as string) ?? '',
+    eventTitle: (booking.eventTitle as string) ?? 'Meeting',
+    startTime: booking.startTime as string,
+    endTime: (booking.endTime as string) ?? (booking.startTime as string),
+    meetingLink: (booking.meetingLink as string) ?? '',
+    hostTimezone:
+      typeof booking.hostTimezone === 'string' && booking.hostTimezone.trim().length > 0
+        ? booking.hostTimezone.trim()
+        : 'UTC',
+  })
+  // No host email to remind — nothing to retry; treat as handled so we don't reprocess every tick.
+  if (!send) return true
 
   try {
-    const mailResult = await ctx.records.create(mailDirScope + '/conversations', {
-      Name: `Reminder: ${eventTitle} ${timeLabel}`,
-      Description: guestName,
-      Type: 'dm',
-      Visibility: 'private',
-      CreatedBy: ctx.ownerUserId,
-      ParticipantHash: `reminder-${booking.recordId}-${window}`,
-      ParticipantIds: JSON.stringify([hostUserId]),
-      Status: 'active',
-      AssigneeId: '',
-      LinkedRef: '',
-      LastMessageAt: new Date().toISOString(),
-      LastMessagePreview: reminderBody.slice(0, 100),
-      LastMessageAuthor: ctx.ownerUserId,
+    const res = await ctx.integrations.call('email/send', {
+      to: send.to,
+      subject: send.subject,
+      html: send.html,
     })
-
-    const convId = (mailResult as any)?.recordId
-    if (convId) {
-      await ctx.records.create(`conv:${convId}/conv_messages`, {
-        Content: reminderBody,
-        AuthorId: ctx.ownerUserId,
-        ParentId: '',
-        Edited: 0,
-        MessageType: 'system',
-        Metadata: JSON.stringify({ source: 'book-me', type: 'reminder', window }),
-      })
+    // email/send can return HTTP-success with a soft error in the body (mirrors booking-email-server).
+    if (res && typeof res === 'object' && (res as { error?: unknown }).error) {
+      console.warn(`[cron:send-reminders] ${window} reminder email/send returned error:`, (res as { error?: unknown }).error)
+      return false
     }
+    return true
   } catch (err) {
-    console.warn(`[cron:send-reminders] Failed to send ${window} reminder for booking ${booking.recordId}:`, err)
+    console.warn(`[cron:send-reminders] Failed to send ${window} reminder:`, err)
+    return false
   }
 }

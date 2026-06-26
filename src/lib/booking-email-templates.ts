@@ -261,6 +261,67 @@ export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): Trans
   return out
 }
 
+export interface ReminderTransactionalInput {
+  /** Reminder lead time — drives the badge/subject wording. */
+  window: '24h' | '1h'
+  hostName: string
+  /** Recipient — the host is reminded of their own upcoming meeting. */
+  hostEmail: string
+  guestName: string
+  eventTitle: string
+  startTime: string
+  endTime: string
+  meetingLink: string
+  hostTimezone?: string
+}
+
+/** Reminder email to the host for an upcoming booking. Returns null when there is no host email. */
+export function buildReminderEmailSend(p: ReminderTransactionalInput): TransactionalEmailSend | null {
+  const to = p.hostEmail.trim()
+  if (!to) return null
+
+  const when = p.window === '24h' ? 'tomorrow' : 'in 1 hour'
+  const hostTz = resolveIanaTimezone(p.hostTimezone)
+  const slot = formatEmailDateAndTimeRange(p.startTime, p.endTime, hostTz)
+  const calendarUrl = generateGoogleCalendarUrl({
+    title: `${p.eventTitle} with ${p.guestName}`,
+    startTime: p.startTime,
+    endTime: p.endTime,
+    description: p.meetingLink ? `Join meeting: ${p.meetingLink}` : '',
+    location: p.meetingLink,
+  })
+
+  const actionButtons = p.meetingLink
+    ? [
+        { href: p.meetingLink, label: 'Join Meeting', primary: true },
+        { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
+      ]
+    : [{ href: calendarUrl, label: 'Add to Google Calendar', primary: true }]
+
+  const html = buildBookMeEmail({
+    headline: 'Upcoming meeting reminder',
+    badge: { label: 'Reminder', color: '#3b82f6' },
+    recipientName: escapeHtmlForEmail(p.hostName || 'there'),
+    introHtml: `Your meeting <strong>${escapeHtmlForEmail(p.eventTitle)}</strong> with <strong>${escapeHtmlForEmail(p.guestName)}</strong> is ${when}.`,
+    cardTitle: p.eventTitle,
+    detailRows: [
+      { label: 'Date', value: slot.dateLine },
+      { label: 'Time', value: slot.timeLine },
+      { label: 'Guest', value: escapeHtmlForEmail(p.guestName) },
+    ],
+    actionButtons,
+    closingLine: "See you there.",
+    hostName: p.hostName,
+    hostEmail: p.hostEmail || undefined,
+  })
+
+  return {
+    to,
+    subject: `Reminder: ${p.eventTitle} is ${when}`,
+    html,
+  }
+}
+
 export interface CancellationTransactionalInput {
   initiatedBy?: 'host' | 'guest'
   hostName: string

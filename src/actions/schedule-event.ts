@@ -7,13 +7,14 @@
  *
  * Flow:
  *  1. Validate event type, availability, timeGap
- *  2. Check for conflicts against bookings collection
- *  3. Create booking record (authoritative)
- *  4. Create calendar events (host + optional guest)
- *  5. Send cross-app notifications (Slack channel + mail DM)
+ *  2. Check for conflicts against bookings collection + host calendar
+ *  3. Create the host calendar event first (so a failure can't orphan a confirmed booking)
+ *  4. Create booking record (authoritative) with calendarEventId already set
+ *  5. Create optional guest calendar event
+ *  6. Send cross-app notifications (Slack channel + mail DM) and confirmation email
  */
-import type { ActionHandler } from 'deepspace/worker'
-import { createDirMailBookingNotification } from '../lib/dir-mail-booking-notify'
+import type { ActionHandler } from '../lib/action-types'
+import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData, getSendExternalEmailFromEventTypeData } from '../lib/dir-mail-booking-notify'
 import { formatDualPartyTimeRangeForDm } from '../lib/email-datetime-format'
 import { formatYmdInTimezone } from '../lib/zoned-time'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
@@ -61,7 +62,6 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     guestEmail,
     guestName,
     hostName,
-    hostEmail,
     description,
     guestUserId,
     meetingLink,
@@ -77,9 +77,8 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     startTime: string
     guestEmail: string
     guestName: string
-    /** Display name for the host (from booking UI — persisted for guests' Meetings view) */
+    /** Display name fallback for the host; the authoritative name/email come from the host profile. */
     hostName?: string
-    hostEmail?: string
     description?: string
     guestUserId?: string
     meetingLink?: string
@@ -101,8 +100,10 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
       ? guestTimezoneParam.trim()
       : ''
 
-  const hostDisplayName = typeof hostName === 'string' ? hostName.trim() : ''
-  const hostDisplayEmail = typeof hostEmail === 'string' ? hostEmail.trim() : ''
+  // Display-name fallback only. Host identity used for emails is resolved authoritatively from the
+  // host's profile after event-type validation (see below) — never from a client-supplied address.
+  let hostDisplayName = typeof hostName === 'string' ? hostName.trim() : ''
+  let hostDisplayEmail = ''
 
   console.log('[schedule-event] Called with:', { hostUserId, eventTypeId, startTime, guestEmail, guestName, guestUserId })
   console.log('[schedule-event] Auth userId:', ctx.userId)
@@ -126,13 +127,39 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
   if (etData.userId !== hostUserId) {
     return { success: false, error: 'Event type does not belong to this host' }
   }
+
+  // Security boundary: resolve the host's real name/email server-side and ignore the client-supplied
+  // values. Otherwise a direct API call could set hostEmail to an arbitrary address and make the app
+  // send booking + reminder emails there from the app's sender, billed to the app owner.
+  // - Name comes from the public `users` record (also drives the booking page display).
+  const hostProfileResult = await ctx.tools.get(APP_SCOPE, 'users', hostUserId)
+  if (hostProfileResult.success) {
+    const hostProfile =
+      (hostProfileResult.data as { record?: { data?: Record<string, unknown> } })?.record?.data ?? {}
+    const profileName = typeof hostProfile.name === 'string' ? hostProfile.name.trim() : ''
+    if (profileName) hostDisplayName = profileName
+  }
+  // - Email comes from the private `host-contacts` collection (kept out of the world-readable
+  //   `users` record). Query by userId — the userBound stamp guarantees the row's userId is the real
+  //   owner, so a caller-chosen recordId can't poison this; recordId is never trusted for identity.
+  const hostContactResult = await ctx.tools.query(APP_SCOPE, 'host-contacts', {
+    where: { userId: hostUserId },
+  })
+  const hostContacts =
+    (hostContactResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
+  const contactEmail = hostContacts[0]?.data?.email
+  hostDisplayEmail = typeof contactEmail === 'string' ? contactEmail.trim() : ''
+
   const duration = etData.duration as number
   const eventTitle = etData.title as string
-  const sendDeepSpaceMail = (etData.sendDeepSpaceMail as boolean) ?? false
+  const sendDeepSpaceMail = getSendDeepSpaceMailFromEventTypeData(etData)
   const sendGoogleCalendarInvite = (etData.sendGcalInvite as boolean) ?? false
-  const sendExternalEmail = (etData.sendExternalEmail as boolean) ?? true
+  const sendExternalEmail = getSendExternalEmailFromEventTypeData(etData)
   const bufferBefore = (etData.bufferBefore as number) ?? 0
   const bufferAfter = (etData.bufferAfter as number) ?? 0
+  // maxAttendees > 1 marks a group event: multiple guests may book the same slot up to capacity.
+  const maxAttendees = (etData.maxAttendees as number) ?? 0
+  const isGroupEvent = maxAttendees > 1
 
   // 2. Compute endTime from event type duration
   const start = new Date(startTime)
@@ -225,17 +252,33 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     }
   }
 
-  // Check for conflicts (expanded by buffer times)
+  // Check for conflicts. Mirrors the client slot picker (getAvailableSlots): for a group event,
+  // count overlapping live bookings and allow until capacity is reached; otherwise any
+  // buffer-expanded overlap is a conflict.
   const bufferedStart = new Date(start.getTime() - bufferBefore * 60_000)
   const bufferedEnd = new Date(end.getTime() + bufferAfter * 60_000)
-  const hasConflict = existingBookings.some((b) => {
-    if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
-    const bStart = new Date(b.data.startTime as string)
-    const bEnd = new Date(b.data.endTime as string)
-    return bufferedStart < bEnd && bufferedEnd > bStart
-  })
+  let hasConflict: boolean
+  if (isGroupEvent) {
+    const overlappingCount = existingBookings.filter((b) => {
+      if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
+      const bStart = new Date(b.data.startTime as string)
+      const bEnd = new Date(b.data.endTime as string)
+      return start < bEnd && end > bStart
+    }).length
+    hasConflict = overlappingCount >= maxAttendees
+  } else {
+    hasConflict = existingBookings.some((b) => {
+      if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
+      const bStart = new Date(b.data.startTime as string)
+      const bEnd = new Date(b.data.endTime as string)
+      return bufferedStart < bEnd && bufferedEnd > bStart
+    })
+  }
   if (hasConflict) {
-    return { success: false, error: 'Time slot conflicts with an existing booking' }
+    return {
+      success: false,
+      error: isGroupEvent ? 'This group session is full' : 'Time slot conflicts with an existing booking',
+    }
   }
 
   // 5b. Check for conflicts against host's calendar events
@@ -244,6 +287,10 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     const calEvents = (calEventsResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
     const hasCalendarConflict = calEvents.some((ev) => {
       if (ev.data.AllDay === 1) return false
+      // Skip the app's own booking mirrors — the bookings collection (step 5) is authoritative for
+      // booking conflicts, and counting these here would block group-event co-attendees.
+      const sourceRef = ev.data.SourceRef as string | undefined
+      if (sourceRef === 'book-me:booking' || sourceRef === 'book-me:guest-booking') return false
       const evStart = new Date(ev.data.StartTime as string)
       const evEnd = new Date(ev.data.EndTime as string)
       if (isNaN(evStart.getTime()) || isNaN(evEnd.getTime())) return false
@@ -290,7 +337,10 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     where: { userId: hostUserId },
   })
   const overrideRecords = (overridesResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
-  const slotDateStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
+  // Overrides are stored as host-local calendar dates; derive the slot's date in the host tz too.
+  // (Workers' runtime tz is UTC, so getFullYear/Month/Date would resolve near-midnight slots to the
+  // wrong day — matching the maxBookingsPerDay check above which already uses formatYmdInTimezone.)
+  const slotDateStr = formatYmdInTimezone(start, hostTimezone)
   const dateOverride = overrideRecords.find(o => o.data.date === slotDateStr)
   if (dateOverride) {
     if (dateOverride.data.type === 'blocked') {
@@ -305,11 +355,37 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     }
   }
 
-  // 6. Create booking record in app:bookme (authoritative — drives conflict detection + slot picker)
-  console.log('[schedule-event] Step 6: Creating booking record')
+  // 6. Create the host calendar event FIRST. Doing this before the booking means a calendar
+  // failure can't leave an orphaned confirmed booking that permanently blocks the slot; the
+  // booking is then written with calendarEventId already set (no separate back-fill update).
+  console.log('[schedule-event] Step 6: Creating calendar event in user:', hostUserId)
+  const calendarResult = await ctx.tools.create(`user:${hostUserId}`, 'events', {
+    Title: `${eventTitle} with ${guestName}`,
+    Description: description ?? '',
+    StartTime: start.toISOString(),
+    EndTime: end.toISOString(),
+    AllDay: 0,
+    Visibility: 'shared',
+    SourceRef: 'book-me:booking',
+    Metadata: JSON.stringify({
+      guestEmail,
+      guestName,
+      bookedBy: ctx.userId,
+      eventTypeId,
+    }),
+  })
+  console.log('[schedule-event] Calendar result:', JSON.stringify(calendarResult).slice(0, 300))
+  if (!calendarResult.success) {
+    console.error('[schedule-event] Calendar event creation FAILED:', calendarResult)
+    return calendarResult
+  }
+  const hostCalendarEventRecordId = (calendarResult.data as { record?: { recordId: string } })?.record?.recordId
+
+  // 7. Create booking record in app:bookme (authoritative — drives conflict detection + slot picker)
+  console.log('[schedule-event] Step 7: Creating booking record')
   const cancelToken = crypto.randomUUID()
   const cancelTokenHash = await hashCancelToken(cancelToken)
-  const bookingResult = await ctx.tools.create(APP_SCOPE, 'bookings', {
+  const bookingPayload = {
     eventTypeId,
     eventTitle,
     hostUserId,
@@ -329,66 +405,20 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     answers: answers ?? {},
     ...(guestTimezone ? { guestTimezone } : {}),
     hostTimezone,
-  })
+    ...(hostCalendarEventRecordId ? { calendarEventId: hostCalendarEventRecordId } : {}),
+  }
+  const bookingResult = await ctx.tools.create(APP_SCOPE, 'bookings', bookingPayload)
   console.log('[schedule-event] Booking result:', JSON.stringify(bookingResult).slice(0, 300))
   if (!bookingResult.success) {
-    return { success: false, error: 'Failed to create booking record' }
-  }
-
-  // 7. Create calendar event in host's user DO
-  console.log('[schedule-event] Step 7: Creating calendar event in user:', hostUserId)
-  const calendarResult = await ctx.tools.create(`user:${hostUserId}`, 'events', {
-    Title: `${eventTitle} with ${guestName}`,
-    Description: description ?? '',
-    StartTime: start.toISOString(),
-    EndTime: end.toISOString(),
-    AllDay: 0,
-    Visibility: 'shared',
-    SourceRef: 'book-me:booking',
-    Metadata: JSON.stringify({
-      guestEmail,
-      guestName,
-      bookedBy: ctx.userId,
-      eventTypeId,
-    }),
-  })
-
-  console.log('[schedule-event] Calendar result:', JSON.stringify(calendarResult).slice(0, 300))
-  if (!calendarResult.success) {
-    console.error('[schedule-event] Calendar event creation FAILED:', calendarResult)
-    return calendarResult
-  }
-
-  // 7a. Store the host calendar event ID back into the booking so reschedule can update it later
-  const hostCalendarEventRecordId = (calendarResult.data as { record?: { recordId: string } })?.record?.recordId
-  const bookingRecordId = (bookingResult.data as { recordId?: string })?.recordId
-  if (hostCalendarEventRecordId && bookingRecordId) {
-    try {
-      await ctx.tools.update(APP_SCOPE, 'bookings', bookingRecordId, {
-        eventTypeId,
-        eventTitle,
-        hostUserId,
-        hostName: hostDisplayName,
-        hostEmail: hostDisplayEmail,
-        guestName,
-        guestEmail,
-        guestUserId: guestUserId ?? '',
-        startTime: start.toISOString(),
-        endTime: end.toISOString(),
-        meetingLink: meetingLink ?? '',
-        cancelToken: cancelTokenHash,
-        status: 'confirmed',
-        seriesId: seriesId ?? '',
-        recurrence: recurrence ?? '',
-        additionalInfo: additionalInfo ?? '',
-        answers: answers ?? {},
-        calendarEventId: hostCalendarEventRecordId,
-        ...(guestTimezone ? { guestTimezone } : {}),
-        hostTimezone,
-      })
-    } catch (err) {
-      console.warn('[schedule-event] Failed to store calendarEventId in booking:', err)
+    // Roll back the calendar event we just created so it can't block the slot on retry.
+    if (hostCalendarEventRecordId) {
+      try {
+        await ctx.tools.remove(`user:${hostUserId}`, 'events', hostCalendarEventRecordId)
+      } catch (err) {
+        console.warn('[schedule-event] Failed to roll back calendar event after booking failure:', err)
+      }
     }
+    return { success: false, error: 'Failed to create booking record' }
   }
 
   // 7b. If guestUserId provided (and distinct from host), create a calendar event in guest's user DO

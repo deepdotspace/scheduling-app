@@ -4,7 +4,7 @@
  * Each action validates business logic before writing — the action
  * code IS the trust boundary, not rate limiting.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 import { scheduleEvent } from './schedule-event'
 import { cancelBooking } from './cancel-booking'
 import { rescheduleBooking } from './reschedule-booking'

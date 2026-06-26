@@ -460,7 +460,9 @@ export default function BookingPage() {
             additionalInfo: formData.additionalInfo || undefined,
             answers: Object.keys(questionAnswers).length > 0 ? questionAnswers : undefined,
             guestTimezone: bookerTimezone,
-            sendConfirmationEmail: idx === 0,
+            // Honor the per-booking "Also send email notification" toggle (sendEmailToo).
+            // idx === 0 limits the confirmation to the first occurrence of a recurring series.
+            sendConfirmationEmail: idx === 0 && sendEmailToo,
           })
           if (!scheduleResult.success) {
             if (idx === 0) {

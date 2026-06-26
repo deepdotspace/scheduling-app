@@ -11,6 +11,7 @@ import { useUser } from 'deepspace'
 import { BookMePlatformProvider } from './platform/BookMePlatformProvider'
 import { SidebarProvider, useSidebar } from './context/SidebarContext'
 import { useProfile, useBookings } from './hooks'
+import { useHostContactSync } from './hooks/useHostContact'
 import { formatTime } from './constants'
 import { ToastContainer } from './components/ui/ToastContainer'
 import { UserAccountMenu } from './components/UserAccountMenu'
@@ -283,6 +284,10 @@ function BookMeInner({ children }: { children: ReactNode }) {
       updateProfile({})
     }
   }, [user, profile, ready, updateProfile])
+
+  // Persist the host's email into the private host-contacts collection so booking confirmations and
+  // the meeting page (which read it off the booking) get a real host email — see useHostContact.
+  useHostContactSync()
 
   const location = useLocation()
   const isFullScreenFlow =

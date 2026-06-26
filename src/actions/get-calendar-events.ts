@@ -4,7 +4,7 @@
  * Unlike get-busy-times (host privacy), this is for the current user’s own
  * events so the booking UI can show “Your Schedule” with event names.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 
 export const getCalendarEvents: ActionHandler = async (ctx) => {
   const { userId, dateStart, dateEnd } = ctx.params as {

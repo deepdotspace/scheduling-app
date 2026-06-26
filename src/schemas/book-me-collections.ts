@@ -92,6 +92,29 @@ export const bookingsSchema: CollectionSchema = {
 }
 
 /**
+ * Private per-user contact info (host email) for sending booking notifications.
+ *
+ * Unlike `users` (world-readable so the public booking page can show host name/avatar), this is
+ * owner-only: guests/anonymous visitors cannot read it, so host emails stay out of the bulk
+ * `users` listing. Server actions (schedule-event) read it via the x-app-action RBAC bypass and
+ * MUST query by `userId` (never trust a caller-chosen recordId). `userId` is userBound, so the DO
+ * stamps it to the connecting user — a client cannot write a contact for someone else's id.
+ */
+export const hostContactsSchema: CollectionSchema = {
+  name: 'host-contacts',
+  ownerField: 'userId',
+  columns: [
+    { name: 'userId', storage: 'text', interpretation: 'plain', userBound: true, immutable: true },
+    { name: 'email', storage: 'text', interpretation: 'plain' },
+  ],
+  permissions: {
+    viewer: { read: 'own', create: true, update: 'own', delete: false },
+    member: { read: 'own', create: true, update: 'own', delete: false },
+    admin: { read: true, create: true, update: true, delete: true },
+  },
+}
+
+/**
  * Per-user calendar rows (DeepSpace calendar) stored in user:{id} RecordRoom scope.
  * Field names match schedule-event / get-busy-times / reschedule-booking.
  */

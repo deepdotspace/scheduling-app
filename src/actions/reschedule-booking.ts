@@ -4,8 +4,8 @@
  * Cancels the old booking and creates a new one at the specified time.
  * Validates the new time against availability and conflicts.
  */
-import type { ActionHandler } from 'deepspace/worker'
-import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData } from '../lib/dir-mail-booking-notify'
+import type { ActionHandler } from '../lib/action-types'
+import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData, getSendExternalEmailFromEventTypeData } from '../lib/dir-mail-booking-notify'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 import { buildRescheduleEmailSend } from '../lib/booking-email-templates'
 import { sendTransactionalEmail } from '../lib/booking-email-server'
@@ -64,7 +64,10 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
   const etData = (etResult.data as { record: { data: Record<string, unknown> } }).record.data
   const duration = etData.duration as number
   const sendDeepSpaceMail = getSendDeepSpaceMailFromEventTypeData(etData)
-  const sendExternalEmail = (etData.sendExternalEmail as boolean) ?? true
+  const sendExternalEmail = getSendExternalEmailFromEventTypeData(etData)
+  // maxAttendees > 1 marks a group event: co-attendees may share a slot up to capacity.
+  const maxAttendees = (etData.maxAttendees as number) ?? 0
+  const isGroupEvent = maxAttendees > 1
 
   const newStart = new Date(newStartTime)
   if (isNaN(newStart.getTime())) {
@@ -82,16 +85,24 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     where: { hostUserId: booking.hostUserId },
   })
   const existingBookings = (bookingsResult.data as { records?: Array<{ recordId: string; data: Record<string, unknown> }> })?.records ?? []
-  const hasConflict = existingBookings.some((b) => {
+  const overlappingOthers = existingBookings.filter((b) => {
     if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
     if (b.recordId === bookingId) return false // Exclude self
     const bStart = new Date(b.data.startTime as string)
     const bEnd = new Date(b.data.endTime as string)
     return newStart < bEnd && newEnd > bStart
   })
+  // Group events allow co-attendees up to capacity (the current booking is already excluded above),
+  // so the new slot is full only when the OTHER attendees already fill it.
+  const hasConflict = isGroupEvent
+    ? overlappingOthers.length >= maxAttendees
+    : overlappingOthers.length > 0
 
   if (hasConflict) {
-    return { success: false, error: 'New time conflicts with an existing booking' }
+    return {
+      success: false,
+      error: isGroupEvent ? 'This group session is full' : 'New time conflicts with an existing booking',
+    }
   }
 
   // Check for conflicts against host's DeepSpace calendar events (parity with schedule-event)
@@ -104,6 +115,10 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
       if (ev.data.AllDay === 1) return false
       // Exclude the booking's own host calendar event from conflict detection
       if (currentCalendarEventId && ev.recordId === currentCalendarEventId) return false
+      // Skip the app's own booking mirrors — the bookings collection is authoritative and counting
+      // them here would block group-event co-attendees.
+      const sourceRef = ev.data.SourceRef as string | undefined
+      if (sourceRef === 'book-me:booking' || sourceRef === 'book-me:guest-booking') return false
       const evStart = new Date(ev.data.StartTime as string)
       const evEnd = new Date(ev.data.EndTime as string)
       if (isNaN(evStart.getTime()) || isNaN(evEnd.getTime())) return false

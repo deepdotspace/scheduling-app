@@ -4,7 +4,7 @@
  * Allowed only for cancelled, no-show, or past confirmed/completed meetings.
  * Best-effort removal of linked platform calendar events, then deletes the booking row.
  */
-import type { ActionHandler } from 'deepspace/worker'
+import type { ActionHandler } from '../lib/action-types'
 import type { Booking } from '../constants'
 import {
   removeGuestBookMeCalendarEvent,

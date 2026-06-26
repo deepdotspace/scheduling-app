@@ -129,6 +129,81 @@ async function withWebSocket(
   })
 }
 
+/**
+ * Create a DeepSpace Mail DM conversation and post its single message over the WS protocol.
+ * All branch-specific values (prefixes, ids, author fallbacks) are passed in explicitly so the
+ * behaviour of each caller is preserved exactly.
+ */
+async function sendDmThread(opts: {
+  token: string
+  userName: string | undefined
+  /** Prefix used for both the conversation Name and the message subject (e.g. 'Booking'). */
+  namePrefix: string
+  eventTitle: string
+  createdBy: string
+  participantHash: string
+  participantIds: Array<string | undefined>
+  lastMessageAt: string
+  lastMessageAuthor: string
+  authorId: string
+  messageContent: string
+  hostName: string
+  guestName: string
+}): Promise<void> {
+  const convId = `dm-${crypto.randomUUID()}`
+
+  await withWebSocket(DEEPSPACE_MAIL_SCOPE, opts.token, opts.userName, (ws) => {
+    ws.send(
+      JSON.stringify({
+        type: MSG_PUT,
+        payload: {
+          collection: 'conversations',
+          recordId: convId,
+          data: {
+            Name: `${opts.namePrefix}: ${opts.eventTitle}`,
+            Description: '',
+            Type: 'dm',
+            CreatedBy: opts.createdBy,
+            ParticipantHash: opts.participantHash,
+            ParticipantIds: JSON.stringify(opts.participantIds),
+            LastMessageAt: opts.lastMessageAt,
+            LastMessagePreview: opts.messageContent.slice(0, 100),
+            LastMessageAuthor: opts.lastMessageAuthor,
+          },
+        },
+      }),
+    )
+  })
+
+  await withWebSocket(`conv:${convId}`, opts.token, opts.userName, (ws) => {
+    const metadata = {
+      subject: `${opts.namePrefix}: ${opts.eventTitle}`,
+      to: [opts.hostName, opts.guestName],
+      cc: [] as string[],
+      bcc: [] as string[],
+      priority: 'normal',
+    }
+
+    ws.send(
+      JSON.stringify({
+        type: MSG_PUT,
+        payload: {
+          collection: 'conv_messages',
+          recordId: `msg-${crypto.randomUUID()}`,
+          data: {
+            Content: opts.messageContent,
+            AuthorId: opts.authorId,
+            ParentId: '',
+            Edited: 0,
+            MessageType: 'email',
+            Metadata: JSON.stringify(metadata),
+          },
+        },
+      }),
+    )
+  })
+}
+
 function formatBookingMessage(p: BookingNotificationParams): string {
   const guestTz = resolveIanaTimezone(p.guestTimezone)
   const hostTz = resolveIanaTimezone(p.hostTimezone)
@@ -202,59 +277,22 @@ export function useBookingNotification() {
       }
 
       const hash = [p.hostUserId, p.guestUserId!].sort().join(':')
-      const convId = `dm-${crypto.randomUUID()}`
-      const now = new Date().toISOString()
       const messageContent = formatBookingMessage(p)
 
-      await withWebSocket(DEEPSPACE_MAIL_SCOPE, token, user?.name ?? undefined, (ws) => {
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conversations',
-              recordId: convId,
-              data: {
-                Name: `Booking: ${p.eventTitle}`,
-                Description: '',
-                Type: 'dm',
-                CreatedBy: user?.id ?? p.guestUserId ?? '',
-                ParticipantHash: hash,
-                ParticipantIds: JSON.stringify([p.hostUserId, p.guestUserId]),
-                LastMessageAt: now,
-                LastMessagePreview: messageContent.slice(0, 100),
-                LastMessageAuthor: user?.id ?? p.guestUserId ?? '',
-              },
-            },
-          }),
-        )
-      })
-
-      await withWebSocket(`conv:${convId}`, token, user?.name ?? undefined, (ws) => {
-        const metadata = {
-          subject: `Booking: ${p.eventTitle}`,
-          to: [p.hostName, p.guestName],
-          cc: [],
-          bcc: [],
-          priority: 'normal',
-        }
-
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conv_messages',
-              recordId: `msg-${crypto.randomUUID()}`,
-              data: {
-                Content: messageContent,
-                AuthorId: user?.id ?? '',
-                ParentId: '',
-                Edited: 0,
-                MessageType: 'email',
-                Metadata: JSON.stringify(metadata),
-              },
-            },
-          }),
-        )
+      await sendDmThread({
+        token,
+        userName: user?.name ?? undefined,
+        namePrefix: 'Booking',
+        eventTitle: p.eventTitle,
+        createdBy: user?.id ?? p.guestUserId ?? '',
+        participantHash: hash,
+        participantIds: [p.hostUserId, p.guestUserId],
+        lastMessageAt: new Date().toISOString(),
+        lastMessageAuthor: user?.id ?? p.guestUserId ?? '',
+        authorId: user?.id ?? '',
+        messageContent,
+        hostName: p.hostName,
+        guestName: p.guestName,
       })
     },
     [user],
@@ -275,59 +313,22 @@ export function useBookingNotification() {
       }
 
       const hash = [hostUserId, guestUserId].sort().join(':')
-      const convId = `dm-${crypto.randomUUID()}`
-      const now = new Date().toISOString()
       const messageContent = formatCancellationMessage(p)
 
-      await withWebSocket(DEEPSPACE_MAIL_SCOPE, token, user?.name ?? undefined, (ws) => {
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conversations',
-              recordId: convId,
-              data: {
-                Name: `Cancelled: ${p.eventTitle}`,
-                Description: '',
-                Type: 'dm',
-                CreatedBy: user?.id ?? guestUserId,
-                ParticipantHash: hash,
-                ParticipantIds: JSON.stringify([hostUserId, guestUserId]),
-                LastMessageAt: now,
-                LastMessagePreview: messageContent.slice(0, 100),
-                LastMessageAuthor: user?.id ?? '',
-              },
-            },
-          }),
-        )
-      })
-
-      await withWebSocket(`conv:${convId}`, token, user?.name ?? undefined, (ws) => {
-        const metadata = {
-          subject: `Cancelled: ${p.eventTitle}`,
-          to: [p.hostName, p.guestName],
-          cc: [] as string[],
-          bcc: [] as string[],
-          priority: 'normal',
-        }
-
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conv_messages',
-              recordId: `msg-${crypto.randomUUID()}`,
-              data: {
-                Content: messageContent,
-                AuthorId: user?.id ?? '',
-                ParentId: '',
-                Edited: 0,
-                MessageType: 'email',
-                Metadata: JSON.stringify(metadata),
-              },
-            },
-          }),
-        )
+      await sendDmThread({
+        token,
+        userName: user?.name ?? undefined,
+        namePrefix: 'Cancelled',
+        eventTitle: p.eventTitle,
+        createdBy: user?.id ?? guestUserId,
+        participantHash: hash,
+        participantIds: [hostUserId, guestUserId],
+        lastMessageAt: new Date().toISOString(),
+        lastMessageAuthor: user?.id ?? '',
+        authorId: user?.id ?? '',
+        messageContent,
+        hostName: p.hostName,
+        guestName: p.guestName,
       })
     },
     [user],
@@ -348,59 +349,22 @@ export function useBookingNotification() {
       }
 
       const hash = [hostUserId, guestUserId].sort().join(':')
-      const convId = `dm-${crypto.randomUUID()}`
-      const now = new Date().toISOString()
       const messageContent = formatRescheduleMessage(p)
 
-      await withWebSocket(DEEPSPACE_MAIL_SCOPE, token, user?.name ?? undefined, (ws) => {
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conversations',
-              recordId: convId,
-              data: {
-                Name: `Rescheduled: ${p.eventTitle}`,
-                Description: '',
-                Type: 'dm',
-                CreatedBy: user?.id ?? guestUserId,
-                ParticipantHash: hash,
-                ParticipantIds: JSON.stringify([hostUserId, guestUserId]),
-                LastMessageAt: now,
-                LastMessagePreview: messageContent.slice(0, 100),
-                LastMessageAuthor: user?.id ?? '',
-              },
-            },
-          }),
-        )
-      })
-
-      await withWebSocket(`conv:${convId}`, token, user?.name ?? undefined, (ws) => {
-        const metadata = {
-          subject: `Rescheduled: ${p.eventTitle}`,
-          to: [p.hostName, p.guestName],
-          cc: [] as string[],
-          bcc: [] as string[],
-          priority: 'normal',
-        }
-
-        ws.send(
-          JSON.stringify({
-            type: MSG_PUT,
-            payload: {
-              collection: 'conv_messages',
-              recordId: `msg-${crypto.randomUUID()}`,
-              data: {
-                Content: messageContent,
-                AuthorId: user?.id ?? '',
-                ParentId: '',
-                Edited: 0,
-                MessageType: 'email',
-                Metadata: JSON.stringify(metadata),
-              },
-            },
-          }),
-        )
+      await sendDmThread({
+        token,
+        userName: user?.name ?? undefined,
+        namePrefix: 'Rescheduled',
+        eventTitle: p.eventTitle,
+        createdBy: user?.id ?? guestUserId,
+        participantHash: hash,
+        participantIds: [hostUserId, guestUserId],
+        lastMessageAt: new Date().toISOString(),
+        lastMessageAuthor: user?.id ?? '',
+        authorId: user?.id ?? '',
+        messageContent,
+        hostName: p.hostName,
+        guestName: p.guestName,
       })
     },
     [user],

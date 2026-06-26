@@ -10,6 +10,7 @@ import {
   availabilitySchema,
   bookingsSchema,
   availabilityOverridesSchema,
+  hostContactsSchema,
   eventsSchema,
 } from './schemas/book-me-collections'
 
@@ -20,6 +21,7 @@ export const schemas: CollectionSchema[] = [
   availabilitySchema,
   availabilityOverridesSchema,
   bookingsSchema,
+  hostContactsSchema,
   eventsSchema,
 ]
 

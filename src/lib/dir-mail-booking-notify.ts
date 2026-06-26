@@ -4,10 +4,26 @@
  * Client WebSocket DMs (app:mail) are separate; keep behavior aligned.
  */
 
-import type { ActionContext } from 'deepspace/worker'
+import type { ActionContext } from './action-types'
+
+/**
+ * Normalize a stored toggle to a real boolean. The event-type schema persists booleans as text,
+ * so a value flipped off in the UI can come back as the string "false"/"0" — which a bare
+ * `as boolean` cast treats as truthy. Mirrors the client's toBool (src/hooks/useEventTypes.ts).
+ */
+export function toBool(val: unknown, defaultValue: boolean): boolean {
+  if (val === true || val === 1 || val === '1' || val === 'true') return true
+  if (val === false || val === 0 || val === '0' || val === 'false') return false
+  return defaultValue
+}
 
 export function getSendDeepSpaceMailFromEventTypeData(etData: Record<string, unknown>): boolean {
-  return (etData.sendDeepSpaceMail as boolean) ?? false
+  return toBool(etData.sendDeepSpaceMail, false)
+}
+
+/** Whether to send the external (Resend) transactional email. Defaults to true when unset. */
+export function getSendExternalEmailFromEventTypeData(etData: Record<string, unknown>): boolean {
+  return toBool(etData.sendExternalEmail, true)
 }
 
 export async function createDirMailBookingNotification(

@@ -10,7 +10,7 @@
  *   - AI chat (Vercel AI SDK + DeepSpace proxy)
  *   - Server actions (app-defined, bypass user RBAC)
  *   - Scoped R2 file storage
- *   - HMAC-authenticated cron
+ *   - Scheduled tasks (self-scheduling AppCronRoom DO)
  *   - Static asset serving with SPA fallback
  */
 
@@ -18,8 +18,6 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import {
   verifyJwt,
-  verifyInternalSignature,
-  buildInternalPayload,
   createDeepSpaceAI,
   buildCronContext,
 } from 'deepspace/worker'
@@ -28,13 +26,14 @@ import {
   RecordRoom,
   YjsRoom,
   CanvasRoom,
-  MediaRoom,
+  CronRoom,
   PresenceRoom,
 } from 'deepspace/worker'
-import type { ActionTools, ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
-import { streamText } from 'ai'
+import type { ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
+import type { ActionTools } from './src/lib/action-types.js'
+import { streamText, stepCountIs } from 'ai'
 import { actions } from './src/actions/index.js'
-import { handler as cronTaskHandler } from './src/cron.js'
+import { handler as cronTaskHandler, tasks as cronTasks } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
@@ -47,7 +46,7 @@ export const __DO_MANIFEST__ = [
   { binding: 'RECORD_ROOMS', className: 'AppRecordRoom', sqlite: true },
   { binding: 'YJS_ROOMS', className: 'AppYjsRoom', sqlite: true },
   { binding: 'CANVAS_ROOMS', className: 'AppCanvasRoom', sqlite: true },
-  { binding: 'MEDIA_ROOMS', className: 'AppMediaRoom', sqlite: true },
+  { binding: 'CRON_ROOMS', className: 'AppCronRoom', sqlite: true },
   { binding: 'PRESENCE_ROOMS', className: 'AppPresenceRoom', sqlite: true },
 ] as const satisfies DOManifest
 
@@ -63,8 +62,27 @@ export class AppRecordRoom extends RecordRoom {
 
 export class AppYjsRoom extends YjsRoom {}
 export class AppCanvasRoom extends CanvasRoom {}
-export class AppMediaRoom extends MediaRoom {}
 export class AppPresenceRoom extends PresenceRoom {}
+
+/**
+ * Per-app scheduled task DO. Reads `tasks` from `src/cron.ts` at construction
+ * (validated by CronRoom) and self-schedules alarms. Each fire calls `onTask`,
+ * which builds a CronContext and dispatches to the BookMe cron handler.
+ * Replaces the old HMAC-authenticated `/internal/cron` HTTP route.
+ */
+export class AppCronRoom extends CronRoom<Env> {
+  private appEnv: Env
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, { tasks: cronTasks })
+    this.appEnv = env
+  }
+
+  protected async onTask(taskName: string): Promise<void> {
+    const roomId = `app:${this.appEnv.APP_NAME}`
+    const ctx = buildCronContext(this.appEnv as any, this.appEnv.OWNER_USER_ID, roomId)
+    await cronTaskHandler(taskName, ctx)
+  }
+}
 
 // =============================================================================
 // Types
@@ -295,7 +313,7 @@ app.all('/api/integrations/:path{.+}', async (c) => {
       body,
     })
     // Log email-related integration calls to aid debugging
-    if (rest.includes('send-email') || rest.includes('email') || rest.includes('email/send')) {
+    if (rest.includes('email')) {
       const responseText = await res.clone().text()
       console.log(`[integration-proxy] ${c.req.method} ${rest} → HTTP ${res.status}`, responseText.slice(0, 300))
     }
@@ -337,13 +355,25 @@ function wsRoute(
   }
 }
 
-app.get('/ws/:roomId', wsRoute((env) => env.RECORD_ROOMS))
+// Forward the authenticated user's name/avatar (NOT email) to the RecordRoom DO. Without a name,
+// the DO's registerUser seeds the shared `users` record with the "Anonymous" sentinel — which is
+// what guests then see as the host's name on the booking page. Email is deliberately NOT forwarded:
+// the `users` collection is world-readable (the public booking page reads host name/avatar, and the
+// app room allows anonymous connections), and registerUser would persist email into rows that any
+// visitor can list. Name and avatar are the only fields the public booking page needs.
+app.get('/ws/:roomId', wsRoute(
+  (env) => env.RECORD_ROOMS,
+  (auth) => ({
+    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
+    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
+  }),
+))
 
 app.get('/ws/yjs/:docId', wsRoute((env) => env.YJS_ROOMS, () => ({ role: 'member' })))
 
 app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
 
-app.get('/ws/media/:roomId', wsRoute((env) => env.MEDIA_ROOMS, () => ({ role: 'member' })))
+app.get('/ws/cron/:roomId', wsRoute((env) => env.CRON_ROOMS, () => ({ role: 'member' })))
 
 app.get('/ws/presence/:scopeId', wsRoute(
   (env) => env.PRESENCE_ROOMS,
@@ -404,16 +434,16 @@ app.post('/api/ai/chat', async (c) => {
   const result = streamText({
     model: anthropic('claude-sonnet-4-20250514') as Parameters<typeof streamText>[0]['model'],
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
-    messages: messages as Parameters<typeof streamText>[0]['messages'],
+    messages: messages as NonNullable<Parameters<typeof streamText>[0]['messages']>,
     tools: tools as Parameters<typeof streamText>[0]['tools'],
-    maxSteps: 5,
+    stopWhen: stepCountIs(5),
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
     },
   })
 
-  return result.toDataStreamResponse({
-    getErrorMessage: (error) => {
+  return result.toUIMessageStreamResponse({
+    onError: (error) => {
       console.error('[ai-chat] response error:', error)
       return error instanceof Error ? error.message : String(error)
     },
@@ -471,25 +501,9 @@ app.all('/api/files/*', async (c) => {
   return new Response(resp.body, { status: resp.status, headers: resp.headers })
 })
 
-// ---------------------------------------------------------------------------
-// Internal cron (HMAC-authenticated)
-// ---------------------------------------------------------------------------
-
-app.post('/internal/cron', async (c) => {
-  const body = await c.req.text()
-  const valid = await verifyInternalSignature({
-    secret: c.env.INTERNAL_STORAGE_HMAC_SECRET,
-    payload: buildInternalPayload(body),
-    signature: c.req.header('x-internal-signature') ?? '',
-    timestamp: c.req.header('x-internal-timestamp') ?? '',
-  })
-  if (!valid) return c.json({ error: 'Forbidden' }, 403)
-  const payload = JSON.parse(body) as { taskName: string; ownerUserId: string }
-  const roomId = `app:${c.env.APP_NAME}`
-  const ctx = buildCronContext(c.env as any, payload.ownerUserId, roomId)
-  await cronTaskHandler(payload.taskName, ctx)
-  return c.json({ ok: true })
-})
+// Cron runs in the per-app AppCronRoom DO (see top of file). The old
+// HMAC-authenticated `/internal/cron` HTTP route was removed in the
+// deepspace 0.4.3 migration — the DO self-schedules via alarms.
 
 // ---------------------------------------------------------------------------
 // Static assets (SPA fallback)
@@ -515,17 +529,20 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
     const targetScope = (params.scopeId as string) || `app:${env.APP_NAME}`
     const doId = env.RECORD_ROOMS.idFromName(targetScope)
     const stub = env.RECORD_ROOMS.get(doId)
-    // RecordRoom tool handler enables RBAC bypass only when appAction=true is on the URL and
-    // userId is in the JSON body (see deepspace handleToolExecute). Without both, updates hit
-    // "UPDATE DENIED" for bookings (ownerField=hostUserId) even when the server action already
-    // authorized the caller (e.g. guest cancel/reschedule).
-    const executeUrl = new URL('https://internal/api/tools/execute')
-    executeUrl.searchParams.set('appAction', 'true')
+    // deepspace 0.4.3 handleToolExecute reads identity + RBAC-bypass from REQUEST HEADERS:
+    // x-user-id and x-app-action (see node_modules/deepspace/dist/worker.js:2163-2164). It does
+    // NOT read the appAction query param or a userId field in the body. Sending them there left
+    // every write running as an anonymous viewer, so bookings updates/deletes hit "UPDATE/DELETE
+    // DENIED" (ownerField=hostUserId) even though the server action already authorized the caller.
     const res = await stub.fetch(
-      new Request(executeUrl.toString(), {
+      new Request('https://internal/api/tools/execute', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool, params, userId }),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': userId,
+          'x-app-action': 'true',
+        },
+        body: JSON.stringify({ tool, params }),
       }),
     )
     return res.json() as Promise<ActionResult>

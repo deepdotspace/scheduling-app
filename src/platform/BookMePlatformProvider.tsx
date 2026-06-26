@@ -80,6 +80,20 @@ interface BookMePlatformContextValue {
   }) => Promise<{ success: boolean; events?: GuestCalendarEvent[]; error?: string }>
 }
 
+/** POST a platform server action with the current auth token; returns the parsed JSON. */
+async function postPlatformAction<T>(path: string, data: unknown): Promise<T> {
+  const token = await getAuthToken()
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(data),
+  })
+  return (await res.json()) as T
+}
+
 const BookMePlatformContext = createContext<BookMePlatformContextValue | null>(null)
 
 export function useBookMePlatform() {
@@ -107,32 +121,18 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     guestTimezone?: string
     sendConfirmationEmail?: boolean
   }) => {
-    console.log('[BookMePlatform] scheduleCalendarEvent called with:', data)
-    const token = await getAuthToken()
-    console.log('[BookMePlatform] Auth token present:', !!token)
-    const res = await fetch('/api/actions/schedule-event', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(data),
-    })
-
-    console.log('[BookMePlatform] Response status:', res.status)
-    const result = await res.json() as {
+    const result = await postPlatformAction<{
       success: boolean
       data?: {
         record?: { recordId: string }
         eventType?: {
-      sendDeepSpaceMail: boolean
-      sendExternalEmail: boolean
-      sendGoogleCalendarInvite: boolean
-    }
+          sendDeepSpaceMail: boolean
+          sendExternalEmail: boolean
+          sendGoogleCalendarInvite: boolean
+        }
       }
       error?: string
-    }
-    console.log('[BookMePlatform] Response body:', result)
+    }>('/api/actions/schedule-event', data)
     if (!result.success) {
       console.error('[BookMePlatform] schedule-event FAILED:', result.error)
       return { success: false, error: result.error ?? 'Unknown error' }
@@ -150,17 +150,7 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     bookingId: string
     cancelToken?: string
   }) => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/cancel-booking', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(data),
-    })
-    const result = await res.json() as { success: boolean; error?: string }
-    return result
+    return postPlatformAction<{ success: boolean; error?: string }>('/api/actions/cancel-booking', data)
   }, [])
 
   const rescheduleBookingAction = useCallback(async (data: {
@@ -170,17 +160,7 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     rescheduleEmail?: string
     reasonForChange?: string
   }) => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/reschedule-booking', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(data),
-    })
-    const result = await res.json() as { success: boolean; error?: string }
-    return result
+    return postPlatformAction<{ success: boolean; error?: string }>('/api/actions/reschedule-booking', data)
   }, [])
 
   const getBusyTimesAction = useCallback(async (data: {
@@ -188,20 +168,11 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     dateStart: string
     dateEnd: string
   }) => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/get-busy-times', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(data),
-    })
-    const result = await res.json() as {
+    const result = await postPlatformAction<{
       success: boolean
       data?: { busyTimes: BusyTime[] }
       error?: string
-    }
+    }>('/api/actions/get-busy-times', data)
     if (!result.success) {
       return { success: false, error: result.error ?? 'Failed to fetch busy times' }
     }
@@ -213,20 +184,11 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     dateStart: string
     dateEnd: string
   }) => {
-    const token = await getAuthToken()
-    const res = await fetch('/api/actions/get-calendar-events', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(data),
-    })
-    const result = await res.json() as {
+    const result = await postPlatformAction<{
       success: boolean
       data?: { events: Array<{ start: string; end: string; title: string }> }
       error?: string
-    }
+    }>('/api/actions/get-calendar-events', data)
     if (!result.success) {
       return { success: false, error: result.error ?? 'Failed to fetch calendar events' }
     }

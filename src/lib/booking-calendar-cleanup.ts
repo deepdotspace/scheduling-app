@@ -2,7 +2,7 @@
  * Removes synthetic BookMe calendar rows from host/guest user scopes.
  * Shared by cancel-booking and delete-booking.
  */
-import type { ActionContext } from 'deepspace/worker'
+import type { ActionContext } from './action-types'
 
 export async function removeHostBookMeCalendarEvent(
   ctx: ActionContext,
