@@ -179,71 +179,8 @@ export function useGoogleConnector() {
 }
 
 export function useGoogleCalendar() {
-  const [isCreating, setIsCreating] = useState(false)
   const [isFetching, setIsFetching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const createEvent = useCallback(
-    async (event: {
-      title: string
-      description?: string
-      start: string
-      end: string
-      allDay?: boolean
-      addVideoConferencing?: boolean
-      attendees?: string[]
-    }) => {
-      setIsCreating(true)
-      setError(null)
-      try {
-        const result = await integration.post<{
-          requiresOAuth?: boolean
-          authUrl?: string
-          id?: string
-          htmlLink?: string
-          meetLink?: string
-          created?: Array<{
-            id: string
-            htmlLink?: string
-            meetLink?: string
-          }>
-        }>('google/calendar-create-event', {
-          title: event.title,
-          description: event.description,
-          start: event.start,
-          end: event.end,
-          allDay: event.allDay,
-          addVideoConferencing: event.addVideoConferencing ?? false,
-          attendees: event.attendees,
-        })
-        if (!result.success) return {}
-        const payload = result.data ?? result
-        if (payload && typeof payload === 'object' && 'requiresOAuth' in payload && payload.requiresOAuth) {
-          return { requiresOAuth: true as const, authUrl: payload.authUrl }
-        }
-        const p = payload as {
-          id?: string
-          htmlLink?: string
-          meetLink?: string
-          created?: Array<{ id: string; htmlLink?: string; meetLink?: string }>
-        }
-        const first = p.created?.[0]
-        return {
-          eventId: first?.id ?? p.id,
-          htmlLink: first?.htmlLink ?? p.htmlLink,
-          meetLink: first?.meetLink ?? p.meetLink,
-          created: p.created,
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to create event'
-        setError(message)
-        return {}
-      } finally {
-        setIsCreating(false)
-      }
-    },
-    [],
-  )
 
   const getEvents = useCallback(async (startDate: string, endDate: string) => {
     setIsFetching(true)
@@ -267,52 +204,7 @@ export function useGoogleCalendar() {
     }
   }, [])
 
-  return { createEvent, getEvents, isCreating, isFetching, error }
-}
-
-export function useGmail() {
-  const [isSending, setIsSending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  function textToHtml(text: string): string {
-    return text
-      .replace(/\n/g, '<br/>')
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-  }
-
-  const sendEmail = useCallback(
-    async (email: { recipient: string; subject: string; content: string; html?: string }) => {
-      setIsSending(true)
-      setError(null)
-      try {
-        const result = await integration.post<{
-          requiresOAuth?: boolean
-          authUrl?: string
-          messageId?: string
-        }>('send-email', {
-          recipient: email.recipient,
-          subject: email.subject,
-          content: email.content,
-          html: email.html || textToHtml(email.content),
-        })
-        const payload = result.data ?? result
-        if (payload && typeof payload === 'object' && 'requiresOAuth' in payload && payload.requiresOAuth) {
-          return { success: false, requiresOAuth: true as const, authUrl: payload.authUrl }
-        }
-        return { success: true, messageId: (payload as { messageId?: string }).messageId }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to send email'
-        setError(message)
-        return { success: false }
-      } finally {
-        setIsSending(false)
-      }
-    },
-    [],
-  )
-
-  return { sendEmail, isSending, error }
+  return { getEvents, isFetching, error }
 }
 
 export function useBookingCalendar() {

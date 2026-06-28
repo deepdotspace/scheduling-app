@@ -6,7 +6,7 @@
  */
 
 import { useMemo } from 'react'
-import { X } from 'lucide-react'
+import { X, Video, Smartphone, MapPin, HelpCircle } from 'lucide-react'
 import { Input, Textarea, Select, Button } from './ui'
 import { AvailabilityPreview } from './AvailabilityPreview'
 import {
@@ -15,7 +15,7 @@ import {
   EVENT_COLORS,
   BUFFER_OPTIONS,
 } from '../constants'
-import type { EventType, MeetingLocation, BookingQuestion, AvailabilitySettings } from '../constants'
+import type { EventType, EventTypeLocation, BookingQuestion, AvailabilitySettings } from '../constants'
 
 export type PanelTab = 'basics' | 'settings' | 'notifications'
 
@@ -23,7 +23,7 @@ export interface EventTypeFormData {
   title: string
   description: string
   duration: number
-  location: MeetingLocation
+  location: EventTypeLocation
   color: string
   /** Google Calendar API: create event + invite guest (stored as sendGcalInvite). */
   sendGoogleCalendarInvite: boolean
@@ -214,13 +214,41 @@ export function EventTypeDetailPanel({
                 />
               )}
             </div>
-            <div className="p-3 rounded-xl border border-gray-200 bg-gray-50/30">
-              <Select
-                label="Location"
-                value={formData.location}
-                onChange={e => setFormData({ ...formData, location: e.target.value as MeetingLocation })}
-                options={MEETING_LOCATIONS.map(l => ({ value: l.value, label: `${l.icon} ${l.label}` }))}
-              />
+            <div className="p-3 rounded-xl border border-gray-200 bg-gray-50/30 space-y-1.5">
+              <label className="block text-sm font-bold text-[#111827]">Location</label>
+              <div className="grid grid-cols-2 gap-2">
+                {MEETING_LOCATIONS.map(loc => {
+                  const Icon = loc.value === 'phone' ? Smartphone : loc.value === 'in-person' ? MapPin : Video
+                  const selected = formData.location === loc.value
+                  return (
+                    <button
+                      key={loc.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, location: loc.value })}
+                      className={`flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border text-center transition-all ${
+                        selected ? 'border-[#111827] bg-white' : 'border-gray-200 bg-white hover:border-gray-300'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 ${selected ? 'text-[#111827]' : 'text-gray-500'}`} />
+                      <span className={`text-[11px] font-medium leading-tight ${selected ? 'text-[#111827]' : 'text-gray-600'}`}>
+                        {loc.label}
+                      </span>
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, location: 'undetermined' })}
+                  className={`flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border text-center transition-all ${
+                    formData.location === 'undetermined' ? 'border-[#111827] bg-white' : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <HelpCircle className={`w-4 h-4 ${formData.location === 'undetermined' ? 'text-[#111827]' : 'text-gray-500'}`} />
+                  <span className={`text-[11px] font-medium leading-tight ${formData.location === 'undetermined' ? 'text-[#111827]' : 'text-gray-600'}`}>
+                    Not determined
+                  </span>
+                </button>
+              </div>
             </div>
             <div className="p-3 rounded-xl border border-gray-200 bg-gray-50/30 space-y-1.5">
               <label className="block text-sm font-bold text-[#111827]">Color</label>
@@ -505,7 +533,9 @@ export function EventTypeDetailPanel({
                   <span className="text-sm text-[#111827]">Google Calendar invite</span>
                   <p className="text-xs text-gray-500">
                     Create an event on your connected Google Calendar and email a calendar invite to the guest. Requires
-                    Google Calendar connected on your dashboard.
+                    Google Calendar connected on your dashboard. Rescheduling or cancelling later updates the booking and
+                    emails everyone an updated "Add to calendar" link, but does not yet edit or remove the original Google
+                    Calendar event automatically.
                   </p>
                 </div>
               </label>

@@ -267,7 +267,7 @@ export default function AnalyticsPage() {
                   </button>
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className="max-w-[260px] text-[12px] font-medium">
-                  Distribution of bookings by day of week over the last 30 days. Use this to see which
+                  Distribution of bookings by day of week over the selected date range. Use this to see which
                   days are most popular. Based on all non-cancelled bookings in range.
                 </PopoverContent>
               </Popover>

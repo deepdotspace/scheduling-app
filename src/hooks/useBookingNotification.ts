@@ -34,9 +34,7 @@ interface BookingNotificationParams {
   endTime: string
   meetingLink: string
   additionalInfo?: string
-  sendEmailToo?: boolean
   sendDeepSpaceMail?: boolean
-  sendExternalEmail?: boolean
   guestTimezone?: string
   hostTimezone?: string
 }
@@ -54,7 +52,6 @@ export interface CancellationNotificationParams {
   startTime: string
   endTime?: string
   cancelledEntireSeries?: boolean
-  sendCancellationEmailToo?: boolean
   sendDeepSpaceMail?: boolean
   guestTimezone?: string
   hostTimezone?: string
@@ -83,7 +80,6 @@ export interface RescheduleNotificationParams {
   meetingLink: string
   additionalInfo?: string
   reasonForChange: string
-  sendRescheduleEmailToo?: boolean
   sendDeepSpaceMail?: boolean
   guestTimezone?: string
   hostTimezone?: string

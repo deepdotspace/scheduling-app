@@ -7,16 +7,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { Clock, Plus, Users, ChevronLeft, ExternalLink, Share2, Video, Layers, Eye, Link2, Power, PowerOff, MoreVertical } from 'lucide-react'
+import { Clock, Plus, Users, ChevronLeft, ExternalLink, Share2, Video, Layers, Eye, Link2, Power, PowerOff, MoreVertical, Check } from 'lucide-react'
 import { useEventTypes, useProfile, useAvailability } from '../hooks'
 import { useUsers } from 'deepspace'
 import { ConfirmDialog } from '../components/ui'
 import { PageHeader } from '../components/PageHeader'
 import { ShareModal } from '../components/ShareModal'
-import { EmbedModal } from '../components/EmbedModal'
 import { EventTypeDetailPanel, type EventTypeFormData, type PanelTab } from '../components/EventTypeDetailPanel'
 import { useSidebar } from '../context/SidebarContext'
-import { MEETING_LOCATIONS, EVENT_COLORS } from '../constants'
+import { meetingLocationLabel, EVENT_COLORS } from '../constants'
 import type { EventType } from '../constants'
 
 /** Matches the dashed “Create New Event Type” row at the end of the list */
@@ -55,6 +54,13 @@ function EventPreviewModal({ event, hostName, onClose, onEdit }: {
   const bookingUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/book/${hostName}/${event.id}`
     : ''
+  const [linkCopied, setLinkCopied] = useState(false)
+  const handleCopyLink = () => {
+    if (!bookingUrl) return
+    navigator.clipboard.writeText(bookingUrl)
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 2000)
+  }
 
   const modalContent = (
     <div
@@ -89,7 +95,7 @@ function EventPreviewModal({ event, hostName, onClose, onEdit }: {
               <h3 className="text-2xl font-bold text-[#111827] mb-1.5 tracking-tight">{event.title}</h3>
               <div className="flex items-center gap-3 text-sm font-medium text-gray-500">
                 <span className="flex items-center gap-1.5 tracking-tight"><Clock className="w-4 h-4" /> {durationLabel}</span>
-                <span className="flex items-center gap-1.5"><Users className="w-4 h-4" /> 1-on-1</span>
+                <span className="flex items-center gap-1.5"><Users className="w-4 h-4" /> {event.maxAttendees > 1 ? 'Group' : '1-on-1'}</span>
               </div>
             </div>
           </div>
@@ -101,7 +107,7 @@ function EventPreviewModal({ event, hostName, onClose, onEdit }: {
                 Location
               </h4>
               <div className="p-3.5 rounded-lg bg-gray-50 border border-gray-200">
-                <p className="text-sm text-[#111827] font-medium">{MEETING_LOCATIONS.find(l => l.value === event.location)?.label ?? event.location}</p>
+                <p className="text-sm text-[#111827] font-medium">{meetingLocationLabel(event.location)}</p>
                 <p className="text-xs text-gray-500 mt-0.5">Link will be provided after booking</p>
               </div>
             </section>
@@ -121,10 +127,18 @@ function EventPreviewModal({ event, hostName, onClose, onEdit }: {
                 <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
                 Event Link
               </h4>
-              <div className="flex items-center gap-2 p-3.5 rounded-lg bg-gray-50 border border-gray-200 group cursor-pointer hover:border-gray-300 transition-all">
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                disabled={!bookingUrl}
+                aria-label={linkCopied ? 'Link copied' : 'Copy event link'}
+                className="flex w-full items-center gap-2 p-3.5 rounded-lg bg-gray-50 border border-gray-200 group cursor-pointer hover:border-gray-300 transition-all text-left disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 <code className="text-xs font-mono text-[#111827] flex-1 truncate">{bookingUrl.replace(/^https?:\/\//, '')}</code>
-                <Share2 className="w-3.5 h-3.5 text-gray-500 group-hover:text-[#111827] transition-colors" />
-              </div>
+                {linkCopied
+                  ? <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  : <Share2 className="w-3.5 h-3.5 text-gray-500 group-hover:text-[#111827] transition-colors" />}
+              </button>
             </section>
 
             {event.bookingQuestions && event.bookingQuestions.length > 0 && (
@@ -173,7 +187,6 @@ export default function EventTypesPage() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [previewEvent, setPreviewEvent] = useState<EventType | null>(null)
   const [shareUrl, setShareUrl] = useState<string | null>(null)
-  const [embedEventType, setEmbedEventType] = useState<EventType | null>(null)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<PanelTab>('basics')
 
@@ -441,7 +454,6 @@ export default function EventTypesPage() {
                       className="rounded-md p-1 text-gray-500 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent md:p-1.5"
                       aria-label="More options"
                       aria-expanded={openMenuId === eventType.id}
-                      disabled={!eventType.isActive}
                       onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === eventType.id ? null : eventType.id) }}
                     >
                       <MoreVertical className="w-4 h-4" />
@@ -454,14 +466,6 @@ export default function EventTypesPage() {
                           className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 text-[#111827]"
                         >
                           Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { eventType.isActive && profile?.username && setEmbedEventType(eventType); setOpenMenuId(null) }}
-                          disabled={!eventType.isActive || !profile?.username}
-                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 text-[#111827] disabled:opacity-50"
-                        >
-                          Embed
                         </button>
                         <button
                           type="button"
@@ -533,16 +537,6 @@ export default function EventTypesPage() {
         variant="danger"
         modalVariant="light"
       />
-
-      {/* Embed Modal */}
-      {embedEventType && profile?.username && (
-        <EmbedModal
-          isOpen={!!embedEventType}
-          onClose={() => setEmbedEventType(null)}
-          bookingUrl={`${window.location.origin}/book/${profile.username}/${embedEventType.id}`}
-          eventTitle={embedEventType.title}
-        />
-      )}
 
       {/* Share Modal (QR code popup) */}
       {shareUrl && (

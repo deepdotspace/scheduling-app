@@ -7,7 +7,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useUser, useUserLookup } from 'deepspace'
-import { Clock, Plus, Search, Mail } from 'lucide-react'
+import { Plus, Search, Mail } from 'lucide-react'
 import { useBookings, useEventTypes, useBookingNotification, useProfile, showToast, useAvailability } from '../hooks'
 import { Modal } from '../components/ui'
 import { PageHeader } from '../components/PageHeader'
@@ -211,7 +211,6 @@ export default function MeetingsPage() {
         startTime: cancelModalBooking.startTime,
         endTime: cancelModalBooking.endTime,
         cancelledEntireSeries: cancelSeries && Boolean(cancelModalBooking.seriesId),
-        sendCancellationEmailToo: eventTypeForCancel?.sendExternalEmail ?? true,
         sendDeepSpaceMail: eventTypeForCancel?.sendDeepSpaceMail ?? true,
         /** Stored at booking time (same as confirmation); do not use viewer browser for the guest. */
         guestTimezone: cancelModalBooking.guestTimezone?.trim() || undefined,
@@ -318,7 +317,7 @@ export default function MeetingsPage() {
       const result = await deleteBookingPermanently(deleteModalBooking.id)
       if (result.success) {
         setDeleteModalBooking(null)
-        showToast('Meeting removed from BookMe', 'success')
+        showToast('Meeting removed from BookWithMe', 'success')
         if (panelCloseTimer.current) clearTimeout(panelCloseTimer.current)
         setPanelOpen(false)
         setSelectedMeetingId(null)
@@ -608,7 +607,7 @@ export default function MeetingsPage() {
             <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
               <p className="font-semibold text-[#111827]">{cancelModalBooking.eventTitle}</p>
               <p className="text-sm text-gray-500 mt-0.5">
-                with {cancelModalBooking.guestName} on {formatDate(cancelModalBooking.startTime)}
+                with {getCounterpartyDisplay(cancelModalBooking, profiles, roomUsersById).name} on {formatDate(cancelModalBooking.startTime)}
               </p>
             </div>
 
@@ -625,7 +624,7 @@ export default function MeetingsPage() {
             )}
 
             <p className="text-sm text-gray-500">
-              The guest will be notified via email about this cancellation.
+              The other participant will be notified via email about this cancellation.
             </p>
 
             {cancelActionError && (
@@ -673,7 +672,7 @@ export default function MeetingsPage() {
         {deleteModalBooking && (
           <div className="space-y-4">
             <p className="text-sm text-[#374151] leading-relaxed">
-              This removes the booking from BookMe for <strong>everyone</strong> (host and guest). Linked
+              This removes the booking from BookWithMe for <strong>everyone</strong> (host and guest). Linked
               calendar entries we created for this slot are removed when possible. You will not be able to
               restore it.
             </p>

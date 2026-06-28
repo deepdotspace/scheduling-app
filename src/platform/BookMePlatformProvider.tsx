@@ -41,8 +41,14 @@ interface BookMePlatformContextValue {
     answers?: Record<string, string | boolean>
     /** IANA zone used on the booking UI (stored on booking + emails). */
     guestTimezone?: string
-    /** When false, server skips confirmation `email/send` (e.g. recurring occurrences after the first). Default true. */
+    /** Guest-selected duration (minutes) for multi-duration event types; server validates against the event type's durations. */
+    duration?: number
+    /** App origin (window.location.origin) used to build the guest manage/cancel link in confirmation email. */
+    origin?: string
+    /** Occurrence gate: when false, skip ALL confirmation email for this call (e.g. recurring occurrences after the first). Default true. */
     sendConfirmationEmail?: boolean
+    /** Guest's "also email me" choice: when false, suppress only the guest copy; host still emailed. Default true. */
+    sendGuestEmail?: boolean
   }) => Promise<{
     success: boolean
     calendarEventId?: string
@@ -119,7 +125,10 @@ export function BookMePlatformProvider({ children }: { children: ReactNode }) {
     additionalInfo?: string
     answers?: Record<string, string | boolean>
     guestTimezone?: string
+    duration?: number
+    origin?: string
     sendConfirmationEmail?: boolean
+    sendGuestEmail?: boolean
   }) => {
     const result = await postPlatformAction<{
       success: boolean

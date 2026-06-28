@@ -9,6 +9,7 @@ import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 import { buildRescheduleEmailSend } from '../lib/booking-email-templates'
 import { sendTransactionalEmail } from '../lib/booking-email-server'
+import { validateHostAvailability } from './validate-availability'
 
 async function hashCancelToken(token: string): Promise<string> {
   const data = new TextEncoder().encode(token)
@@ -47,9 +48,11 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     return { success: false, error: 'Cannot reschedule a no-show booking' }
   }
 
-  // Authorization
-  const isHost = ctx.userId === booking.hostUserId
-  const isGuest = ctx.userId === booking.guestUserId
+  // Authorization. Guard against an empty ctx.userId (the guest-token dispatch path passes userId='')
+  // matching an empty stored id: anonymous bookings persist guestUserId='' (and a host id is never
+  // empty), so without this `'' === ''` would make isGuest true and skip the cancelToken check entirely.
+  const isHost = ctx.userId !== '' && ctx.userId === booking.hostUserId
+  const isGuest = ctx.userId !== '' && ctx.userId === booking.guestUserId
   const hasValidToken = cancelToken && (await hashCancelToken(cancelToken)) === booking.cancelToken
 
   if (!isHost && !isGuest && !hasValidToken) {
@@ -62,7 +65,14 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     return { success: false, error: 'Event type not found' }
   }
   const etData = (etResult.data as { record: { data: Record<string, unknown> } }).record.data
-  const duration = etData.duration as number
+  // Preserve the booking's actual length (a guest may have booked a non-default duration on a
+  // multi-duration event type); recomputing from etData.duration would silently resize the meeting.
+  // Fall back to the event type's base duration only if the stored times are unusable.
+  const bookedDurationMs = new Date(booking.endTime as string).getTime() - new Date(booking.startTime as string).getTime()
+  const duration =
+    Number.isFinite(bookedDurationMs) && bookedDurationMs > 0
+      ? bookedDurationMs / 60_000
+      : (etData.duration as number)
   const sendDeepSpaceMail = getSendDeepSpaceMailFromEventTypeData(etData)
   const sendExternalEmail = getSendExternalEmailFromEventTypeData(etData)
   // maxAttendees > 1 marks a group event: co-attendees may share a slot up to capacity.
@@ -85,6 +95,29 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     where: { hostUserId: booking.hostUserId },
   })
   const existingBookings = (bookingsResult.data as { records?: Array<{ recordId: string; data: Record<string, unknown> }> })?.records ?? []
+
+  // Server-side availability enforcement for guest-initiated reschedules (parity with schedule-event
+  // via the shared helper). The public reschedule path is authorized by a guest cancelToken, so the
+  // client slot filter is not a real guard — without this a guest could move a meeting outside the
+  // host's availability/overrides, past the per-day cap, or inside the timeGap horizon.
+  // A host authenticated via JWT may reschedule their own meeting freely (Calendly-style: hosts move
+  // bookings to any future, conflict-free time regardless of their published windows), so the
+  // availability/timeGap gate is skipped for them and enforced only on the guest/token paths. Exclude
+  // this booking from the per-day count (it is being moved, not added).
+  if (!isHost) {
+    const availabilityCheck = await validateHostAvailability(ctx.tools, {
+      hostUserId: booking.hostUserId as string,
+      start: newStart,
+      end: newEnd,
+      existingBookings,
+      excludeBookingId: bookingId,
+      availabilityScheduleId: typeof etData.availabilityScheduleId === 'string' ? etData.availabilityScheduleId : undefined,
+    })
+    if (!availabilityCheck.ok) {
+      return { success: false, error: availabilityCheck.error }
+    }
+  }
+
   const overlappingOthers = existingBookings.filter((b) => {
     if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
     if (b.recordId === bookingId) return false // Exclude self
@@ -175,6 +208,9 @@ export const rescheduleBooking: ActionHandler = async (ctx) => {
     endTime: newEnd.toISOString(),
     rescheduleEmail: auditEmail,
     reasonForChange: auditReason,
+    // Re-arm reminders for the new time: the cron job only sends when the window flag is unset, so a
+    // reminder that already fired for the original slot would otherwise suppress the new one.
+    remindersSent: {},
   })
 
   if (!updateResult.success) {

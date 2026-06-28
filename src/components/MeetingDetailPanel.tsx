@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { X, Clock, Video, Mail, MapPin, Trash2 } from 'lucide-react'
 import { QuickTooltip } from './ui'
-import { formatDate, formatTime, MEETING_LOCATIONS } from '../constants'
+import { formatDate, formatTime, meetingLocationLabel } from '../constants'
 import type { BookingQuestion } from '../constants'
 import type { BookingWithRole } from '../hooks/useBookings'
 import type { CounterpartyDisplay } from '../lib/meeting-counterparty'
@@ -22,11 +22,6 @@ function getDurationMinutes(startTime: string, endTime: string): number {
   return Math.round((end - start) / 60000)
 }
 
-function getLocationLabel(locationValue?: string): string {
-  if (!locationValue) return '—'
-  const found = MEETING_LOCATIONS.find(l => l.value === locationValue)
-  return found?.label ?? locationValue
-}
 
 interface EventTypeInfo {
   title: string
@@ -99,7 +94,7 @@ export function MeetingDetailPanel({
   const wasRescheduled = Boolean(booking.reasonForChange?.trim() || booking.rescheduleEmail?.trim())
   const timeStatusLabel = getMeetingStatusLabel(booking)
   const dateTimeStr = `${formatDate(booking.startTime)} at ${formatTime(booking.startTime)}`
-  const locationLabel = getLocationLabel(eventType?.location)
+  const locationLabel = meetingLocationLabel(eventType?.location)
   const bookingQuestions = eventType?.bookingQuestions ?? []
 
   return (
@@ -416,7 +411,7 @@ export function MeetingDetailPanel({
               type="button"
               onClick={onRequestPermanentDelete}
               disabled={isPermanentDeletePending}
-              aria-label="Permanently delete this meeting from BookMe"
+              aria-label="Permanently delete this meeting from BookWithMe"
               className="app-btn-secondary flex min-h-[2.25rem] w-full flex-1 items-center justify-center gap-0.5 border-red-200 py-1.5 px-1 text-[9px] font-bold uppercase tracking-wider text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 sm:gap-1 sm:px-1.5 sm:text-[10px]"
             >
               <Trash2 className="h-3 w-3 shrink-0" aria-hidden />

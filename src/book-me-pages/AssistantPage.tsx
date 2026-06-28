@@ -15,6 +15,7 @@ import {
   Home,
   Plus,
   ChevronLeft,
+  ChevronDown,
   Clock,
   Video,
   MapPin,
@@ -60,6 +61,8 @@ interface AssistantEventData {
   teamMemberIds: string[]
   bufferBefore: string
   bufferAfter: string
+  /** '' = use the default schedule; otherwise the id of the availability schedule to apply. */
+  availabilityScheduleId: string
   questions: Array< { id: string; text: string; required: boolean }>
   sendGoogleCalendarInvite: boolean
   sendDeepSpaceMail: boolean
@@ -75,6 +78,7 @@ const INITIAL_EVENT_DATA: AssistantEventData = {
   teamMemberIds: [],
   bufferBefore: '0',
   bufferAfter: '0',
+  availabilityScheduleId: '',
   questions: [],
   sendGoogleCalendarInvite: false,
   sendDeepSpaceMail: false,
@@ -127,6 +131,97 @@ function WizardStepFooter({
   )
 }
 
+/**
+ * Custom dropdown (not a native <select>) styled with the assistant's app tokens. Used to pick which
+ * availability schedule a new event type should use.
+ */
+function ScheduleSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label?: string
+  value: string
+  options: Array<{ value: string; label: string }>
+  onChange: (value: string) => void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const selected = options.find(o => o.value === value) ?? options[0]
+
+  return (
+    <div className="space-y-1.5">
+      {label && (
+        <label className="text-xs font-bold uppercase tracking-widest text-[var(--color-app-text-muted)]">
+          {label}
+        </label>
+      )}
+      <div ref={ref} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-2 rounded-xl border border-[var(--color-app-border)] bg-[var(--color-app-card)] px-4 py-3 text-left text-sm font-medium text-[var(--color-app-text)] transition-colors hover:border-[var(--color-app-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-app-sidebar)]/30"
+        >
+          <span className="truncate">{selected?.label}</span>
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 text-[var(--color-app-text-muted)] transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {open && (
+          <div
+            role="listbox"
+            className="absolute left-0 right-0 z-30 mt-1.5 max-h-64 overflow-auto rounded-xl border border-[var(--color-app-border)] bg-[var(--color-app-card)] p-1 shadow-lg shadow-black/10"
+          >
+            {options.map(o => {
+              const isSelected = o.value === value
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    onChange(o.value)
+                    setOpen(false)
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                    isSelected
+                      ? 'bg-[var(--color-app-sidebar)]/10 font-semibold text-[var(--color-app-text)]'
+                      : 'text-[var(--color-app-text)] hover:bg-[var(--color-app-border)]/40'
+                  }`}
+                >
+                  <span className="truncate">{o.label}</span>
+                  {isSelected && <Check className="h-4 w-4 shrink-0 text-[var(--color-app-sidebar)]" />}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function AssistantPage() {
   const navigate = useNavigate()
   const { user } = useUser()
@@ -147,7 +242,7 @@ export default function AssistantPage() {
     disconnectGoogle,
     refreshStatus,
   } = useIntegrations()
-  const { availability, ready: availabilityReady } = useAvailability()
+  const { availability, schedules, getScheduleById, ready: availabilityReady } = useAvailability()
 
   const [step, setStep] = useState(0)
   const [showGettingStartedPanel, setShowGettingStartedPanel] = useState(false)
@@ -395,7 +490,7 @@ export default function AssistantPage() {
         title: eventData.title || 'New Meeting',
         description: '',
         duration,
-        location: (eventData.location && eventData.location !== 'undetermined' ? eventData.location : 'google-meet') as MeetingLocation,
+        location: eventData.location || 'deepspace-meets',
         isActive: true,
         color,
         sendGoogleCalendarInvite: eventData.sendGoogleCalendarInvite,
@@ -404,7 +499,7 @@ export default function AssistantPage() {
         bufferBefore: parseInt(eventData.bufferBefore, 10) || 0,
         bufferAfter: parseInt(eventData.bufferAfter, 10) || 0,
         durations: [],
-        availabilityScheduleId: '',
+        availabilityScheduleId: eventData.availabilityScheduleId,
         bookingQuestions: eventData.questions
           .filter(q => q.text.trim())
           .map(q => ({
@@ -430,6 +525,17 @@ export default function AssistantPage() {
     navigator.clipboard.writeText(text)
     showToast('Link copied to clipboard', 'success')
   }, [])
+
+  // Availability-step schedule picker: '' = the default/active schedule; otherwise a specific schedule.
+  const selectedScheduleForPreview = eventData.availabilityScheduleId
+    ? getScheduleById(eventData.availabilityScheduleId)
+    : undefined
+  const previewAvailability = selectedScheduleForPreview ?? availability
+  const previewScheduleName = selectedScheduleForPreview?.name ?? availability.name
+  const scheduleOptions = [
+    { value: '', label: `Default (${schedules[0]?.name ?? 'Standard Hours'})` },
+    ...schedules.map(s => ({ value: s.id ?? '', label: s.name })),
+  ]
 
   const steps = [
     {
@@ -652,11 +758,7 @@ export default function AssistantPage() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             {MEETING_LOCATIONS.map(loc => {
-              const Icon = loc.value === 'deepspace-meets' || loc.value === 'google-meet' || loc.value === 'zoom'
-                ? Video
-                : loc.value === 'phone'
-                  ? Smartphone
-                  : MapPin
+              const Icon = loc.value === 'phone' ? Smartphone : loc.value === 'in-person' ? MapPin : Video
               return (
                 <button
                   key={loc.value}
@@ -746,7 +848,15 @@ export default function AssistantPage() {
             </h2>
           </div>
           <div className="space-y-4">
-            <AvailabilityPreview availability={availability} scheduleName={availability.name} readOnly />
+            {schedules.length > 1 && (
+              <ScheduleSelect
+                label="Availability schedule"
+                value={eventData.availabilityScheduleId}
+                options={scheduleOptions}
+                onChange={v => setEventData({ ...eventData, availabilityScheduleId: v })}
+              />
+            )}
+            <AvailabilityPreview availability={previewAvailability} scheduleName={previewScheduleName} readOnly />
             <p className="text-sm text-[var(--color-app-text-muted)]">
               You can edit your availability in the{' '}
               <GuardedLink to="/availability" className="text-[var(--color-app-sidebar)] font-medium hover:underline">
@@ -1050,6 +1160,7 @@ export default function AssistantPage() {
                   <p className="font-bold text-[var(--color-app-text)]">Google Calendar invite</p>
                   <p className="text-[10px] text-[var(--color-app-text-muted)]">
                     Create a Google Calendar event and email an invite to the guest (connect your calendar on the dashboard).
+                    Later reschedules/cancellations email an updated calendar link but don't yet edit the original Google event.
                   </p>
                 </div>
               </div>
@@ -1192,7 +1303,7 @@ export default function AssistantPage() {
                       ? createdEventTypeId
                         ? `${window.location.origin}/book/${profile.username}/${createdEventTypeId}`
                         : `${window.location.origin}/book/${profile.username}`
-                      : 'book.me/your-username'}
+                      : 'bookwithme.me/your-username'}
                   </span>
                   <button
                     type="button"

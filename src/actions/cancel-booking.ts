@@ -50,9 +50,12 @@ export const cancelBooking: ActionHandler = async (ctx) => {
     return { success: false, error: 'Cannot cancel a meeting marked as no-show' }
   }
 
-  // Authorization: either the cancelToken matches, or the user is the host/guest
-  const isHost = ctx.userId === booking.hostUserId
-  const isGuest = ctx.userId === booking.guestUserId
+  // Authorization: either the cancelToken matches, or the user is the host/guest. Guard against an
+  // empty ctx.userId (the guest-token dispatch path passes userId='') matching an empty stored id:
+  // anonymous bookings persist guestUserId='', so without this `'' === ''` would make isGuest true and
+  // skip the cancelToken check entirely.
+  const isHost = ctx.userId !== '' && ctx.userId === booking.hostUserId
+  const isGuest = ctx.userId !== '' && ctx.userId === booking.guestUserId
   const hasValidToken = cancelToken && (await hashCancelToken(cancelToken)) === booking.cancelToken
 
   if (!isHost && !isGuest && !hasValidToken) {

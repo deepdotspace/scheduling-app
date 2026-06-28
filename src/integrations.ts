@@ -10,8 +10,13 @@
  */
 
 export const integrations: Record<string, { billing: 'developer' | 'user' }> = {
-  /** Resend (or provider) via api-worker `email/send` */
-  email: { billing: 'developer' },
+  /**
+   * Resend (or provider) via api-worker `email/send`. Billed to the signed-in caller: booking is
+   * sign-in-only, so the user who triggers a send (the booker on schedule, the initiator on
+   * cancel/reschedule) pays from their own credits rather than the app owner footing every email.
+   * Note: cron reminder sends have no caller and stay on the app-owner identity (see src/cron.ts).
+   */
+  email: { billing: 'user' },
 
   /**
    * Google Workspace (Calendar, Gmail, Drive) — paths like `google/calendar-list-events`.
@@ -21,6 +26,5 @@ export const integrations: Record<string, { billing: 'developer' | 'user' }> = {
 
   status: { billing: 'user' },
   'oauth': { billing: 'user' },
-  'send-email': { billing: 'user' },
   'booking-create-event': { billing: 'developer' },
 }

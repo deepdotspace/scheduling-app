@@ -14,7 +14,6 @@ import type { BookingWithRole } from '../hooks/useBookings'
 
 interface DayData {
   label: string
-  shortLabel: string
   /** total confirmed meeting minutes */
   minutes: number
   /** total confirmed meeting count */
@@ -55,7 +54,7 @@ function computeWeekData(bookings: BookingWithRole[], weekStart: Date): DayData[
       return sum + Math.max(0, (end - start) / 60000)
     }, 0)
 
-    return { label, shortLabel: label, minutes: Math.round(minutes), count: dayBookings.length }
+    return { label, minutes: Math.round(minutes), count: dayBookings.length }
   })
 }
 

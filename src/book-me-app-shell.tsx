@@ -84,7 +84,7 @@ function Sidebar() {
           <div className="w-8 h-8 rounded-lg bg-white flex items-center justify-center shrink-0">
             <CalendarCheck className="w-5 h-5 text-black" strokeWidth={2} />
           </div>
-          <span className="text-lg font-black text-white tracking-tight italic truncate">Book Me</span>
+          <span className="text-lg font-black text-white tracking-tight italic truncate">BookWithMe</span>
         </Link>
         <div className="flex items-center gap-1 shrink-0">
           <UserAccountMenu variant="dark" />
@@ -142,7 +142,7 @@ function Sidebar() {
           </div>
 
           <div className={`flex-1 flex items-center justify-between pr-2 overflow-hidden whitespace-nowrap transition-opacity duration-200 ${effectivelyCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-            <h1 className="text-base font-black text-white tracking-tight italic">Book Me</h1>
+            <h1 className="text-base font-black text-white tracking-tight italic">BookWithMe</h1>
             <button
               type="button"
               onClick={() => setIsCollapsed(true)}

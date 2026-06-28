@@ -16,42 +16,38 @@
 import type { ActionHandler } from '../lib/action-types'
 import { createDirMailBookingNotification, getSendDeepSpaceMailFromEventTypeData, getSendExternalEmailFromEventTypeData } from '../lib/dir-mail-booking-notify'
 import { formatDualPartyTimeRangeForDm } from '../lib/email-datetime-format'
-import { formatYmdInTimezone } from '../lib/zoned-time'
 import { SCOPE_ID as APP_SCOPE } from '../constants'
 import { buildConfirmedBookingSends } from '../lib/booking-email-templates'
 import { sendTransactionalEmailBatch } from '../lib/booking-email-server'
-
-type DayOfWeek = 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday'
-interface DayBlock { startTime: string; endTime: string }
-interface DaySettings { isAvailable: boolean; blocks?: DayBlock[]; startTime?: string; endTime?: string }
-
-const DAY_NAMES: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
-
-function parseTimeToMinutes(time: string): number {
-  const [h, m] = time.split(':').map(Number)
-  return h * 60 + m
-}
-
-/** Convert a UTC Date to hours/minutes/dayOfWeek in a given IANA timezone. */
-function getTimeInTimezone(date: Date, timezone: string): { hours: number; minutes: number; dayOfWeek: number } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    hour: 'numeric',
-    minute: 'numeric',
-    weekday: 'short',
-    hour12: false,
-  }).formatToParts(date)
-  const hours = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0')
-  const minutes = parseInt(parts.find(p => p.type === 'minute')?.value ?? '0')
-  const weekday = parts.find(p => p.type === 'weekday')?.value ?? ''
-  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
-  return { hours, minutes, dayOfWeek: dayMap[weekday] ?? date.getUTCDay() }
-}
+import { validateHostAvailability } from './validate-availability'
 
 async function hashCancelToken(token: string): Promise<string> {
   const data = new TextEncoder().encode(token)
   const hash = await crypto.subtle.digest('SHA-256', data)
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// --- Abuse guard: cap how many confirmation emails one guest address can trigger ---
+// Booking emails are developer-billed, so a script (or someone email-bombing a victim address)
+// directly costs the app owner. Count this guest's recent booking-events straight from the
+// bookings collection — a recurring series counts once (via seriesId). No extra infrastructure.
+const EMAIL_RL_WINDOW_MS = 60 * 60 * 1000 // rolling 1 hour
+const EMAIL_RL_MAX = 5                     // max distinct booking-events per guest email / window
+const EMAIL_RL_SCAN = 50                   // bound the lookback scan
+
+function countRecentBookingEvents(
+  records: Array<{ recordId: string; createdAt?: string; data: Record<string, unknown> }>,
+  sinceMs: number,
+): number {
+  const events = new Set<string>()
+  for (const r of records) {
+    const t = Date.parse(r.createdAt ?? '')
+    if (!Number.isFinite(t) || t < sinceMs) continue
+    // Series counts once; standalone bookings are unique by their own id.
+    const key = typeof r.data.seriesId === 'string' && r.data.seriesId ? r.data.seriesId : r.recordId
+    events.add(key)
+  }
+  return events.size
 }
 
 export const scheduleEvent: ActionHandler = async (ctx) => {
@@ -70,7 +66,10 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     additionalInfo,
     answers,
     guestTimezone: guestTimezoneParam,
+    duration: durationParam,
+    origin: originParam,
     sendConfirmationEmail: sendConfirmationEmailParam,
+    sendGuestEmail: sendGuestEmailParam,
   } = ctx.params as {
     hostUserId: string
     eventTypeId: string
@@ -89,10 +88,23 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     /** IANA timezone the guest used in the booking UI */
     guestTimezone?: string
     /**
-     * When false, skip transactional `email/send` confirmation (e.g. recurring series after the first occurrence).
-     * Default true.
+     * Guest-selected duration (minutes) for multi-duration event types. Honored only when it is one
+     * of the event type's configured `durations`; otherwise the base `etData.duration` is used. A raw
+     * client `endTime` is never trusted.
+     */
+    duration?: number
+    /** App origin (e.g. https://book.example.com) used to build the guest manage/cancel link in email. */
+    origin?: string
+    /**
+     * Occurrence gate: when false, skip ALL transactional confirmation email for this call (host and
+     * guest) — used for recurring-series occurrences after the first. Default true.
      */
     sendConfirmationEmail?: boolean
+    /**
+     * Guest's per-booking "also email me" choice: when false, suppress only the guest's confirmation
+     * copy; the host is still emailed (subject to the occurrence gate above). Default true.
+     */
+    sendGuestEmail?: boolean
   }
 
   const guestTimezone =
@@ -105,23 +117,45 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
   let hostDisplayName = typeof hostName === 'string' ? hostName.trim() : ''
   let hostDisplayEmail = ''
 
-  console.log('[schedule-event] Called with:', { hostUserId, eventTypeId, startTime, guestEmail, guestName, guestUserId })
-  console.log('[schedule-event] Auth userId:', ctx.userId)
-
   if (!hostUserId || !eventTypeId || !startTime || !guestEmail || !guestName) {
-    console.log('[schedule-event] Missing required fields:', { hostUserId: !!hostUserId, eventTypeId: !!eventTypeId, startTime: !!startTime, guestEmail: !!guestEmail, guestName: !!guestName })
     return { success: false, error: 'Missing required fields' }
   }
 
+  // Reject malformed guest emails server-side: a direct API call bypasses any client check, and an
+  // unsendable address means the guest silently never receives their confirmation.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail.trim())) {
+    return { success: false, error: 'Please enter a valid email address' }
+  }
+
+  // Throttle only calls that will actually send mail — recurring follow-on occurrences pass
+  // sendConfirmationEmail:false and are exempt, so a legit recurring series counts as one.
+  if (sendConfirmationEmailParam !== false) {
+    const recent = await ctx.tools.query(APP_SCOPE, 'bookings', {
+      where: { guestEmail },
+      orderBy: 'createdAt',
+      orderDir: 'desc',
+      limit: EMAIL_RL_SCAN,
+    })
+    const recentRecords =
+      (recent.data as { records?: Array<{ recordId: string; createdAt?: string; data: Record<string, unknown> }> })
+        ?.records ?? []
+    if (countRecentBookingEvents(recentRecords, Date.now() - EMAIL_RL_WINDOW_MS) >= EMAIL_RL_MAX) {
+      return { success: false, error: 'Too many bookings from this email address recently. Please try again in a bit.' }
+    }
+  }
+
   // 1. Validate event type exists and is active
-  console.log('[schedule-event] Step 1: Fetching event type', eventTypeId, 'from', APP_SCOPE)
   const eventTypeResult = await ctx.tools.get(APP_SCOPE, 'event-types', eventTypeId)
-  console.log('[schedule-event] Event type result:', JSON.stringify(eventTypeResult).slice(0, 500))
   if (!eventTypeResult.success) {
     return { success: false, error: 'Event type not found' }
   }
   const etData = (eventTypeResult.data as { record: { data: Record<string, unknown> } }).record.data
-  if (!etData.isActive) {
+  // `isActive` is persisted in a text column, so it reads back as the string "true"/"false" (no
+  // boolean decode). Compare against the falsey forms — a bare truthiness check would pass "false"
+  // and let bookings through on a deactivated event type.
+  const isActive =
+    etData.isActive !== false && etData.isActive !== 'false' && etData.isActive !== 0 && etData.isActive !== '0'
+  if (!isActive) {
     return { success: false, error: 'Event type is not active' }
   }
   if (etData.userId !== hostUserId) {
@@ -150,7 +184,16 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
   const contactEmail = hostContacts[0]?.data?.email
   hostDisplayEmail = typeof contactEmail === 'string' ? contactEmail.trim() : ''
 
-  const duration = etData.duration as number
+  // Honor a guest-selected duration only when it is one of the event type's configured durations
+  // (multi-duration event types). Never trust an arbitrary client-supplied length/endTime.
+  const baseDuration = etData.duration as number
+  const allowedDurations = Array.isArray(etData.durations)
+    ? (etData.durations as unknown[]).filter((d): d is number => typeof d === 'number')
+    : []
+  const duration =
+    typeof durationParam === 'number' && allowedDurations.includes(durationParam)
+      ? durationParam
+      : baseDuration
   const eventTitle = etData.title as string
   const sendDeepSpaceMail = getSendDeepSpaceMailFromEventTypeData(etData)
   const sendGoogleCalendarInvite = (etData.sendGcalInvite as boolean) ?? false
@@ -174,85 +217,28 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     return { success: false, error: 'Cannot book a time in the past' }
   }
 
-  // 4. Load host availability
-  console.log('[schedule-event] Step 4: Querying availability for hostUserId:', hostUserId)
-  const availResult = await ctx.tools.query(APP_SCOPE, 'availability', {
-    where: { userId: hostUserId },
-    limit: 1,
-  })
-  console.log('[schedule-event] Availability query result:', JSON.stringify(availResult).slice(0, 500))
-  const availRecords = (availResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
-  console.log('[schedule-event] Availability records count:', availRecords.length)
-  if (availRecords.length === 0) {
-    // Also try querying ALL availability records for debugging
-    const allAvailResult = await ctx.tools.query(APP_SCOPE, 'availability', {})
-    const allAvailRecords = (allAvailResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
-    console.log('[schedule-event] ALL availability records:', allAvailRecords.length, allAvailRecords.map(r => ({ userId: r.data.userId })))
-    return { success: false, error: 'Host has not configured availability' }
-  }
-  const avail = availRecords[0].data
-  console.log('[schedule-event] Host availability found, timezone:', avail.timezone)
-
-  // Convert slot times to the host's configured timezone for availability check.
-  // Availability windows (e.g. 09:00-17:00) are in the host's local timezone.
-  // The incoming startTime is UTC (ISO string), so we convert to the host's tz.
-  const hostTimezone = (avail.timezone as string) || 'UTC'
-  const slotLocal = getTimeInTimezone(start, hostTimezone)
-  const endLocal = getTimeInTimezone(end, hostTimezone)
-
-  const dayName = DAY_NAMES[slotLocal.dayOfWeek]
-  const daySettings = avail[dayName] as DaySettings | undefined
-  if (!daySettings?.isAvailable) {
-    return { success: false, error: `Host is not available on ${dayName}` }
-  }
-
-  // Normalize legacy single-block format to blocks array
-  const blocks: DayBlock[] = Array.isArray(daySettings.blocks) && daySettings.blocks.length > 0
-    ? daySettings.blocks
-    : [{ startTime: daySettings.startTime ?? '09:00', endTime: daySettings.endTime ?? '17:00' }]
-
-  // Check time falls within any availability block (in host's timezone)
-  const slotStartMins = slotLocal.hours * 60 + slotLocal.minutes
-  const slotEndMins = endLocal.hours * 60 + endLocal.minutes
-  const inSomeBlock = blocks.some(b => {
-    const availStart = parseTimeToMinutes(b.startTime)
-    const availEnd = parseTimeToMinutes(b.endTime)
-    return slotStartMins >= availStart && slotEndMins <= availEnd
-  })
-  if (!inSomeBlock) {
-    return { success: false, error: 'Requested time is outside availability window' }
-  }
-
-  // Check timeGap (minimum minutes before booking)
-  const timeGap = (avail.timeGap as number) ?? 0
-  const minsUntilSlot = (start.getTime() - now.getTime()) / 60_000
-  if (minsUntilSlot < timeGap) {
-    return { success: false, error: `Must book at least ${timeGap} minutes in advance` }
-  }
-
-  // 5. Check for conflicts against bookings collection (same source the UI uses)
-  console.log('[schedule-event] Step 5: Checking conflicts for hostUserId:', hostUserId)
+  // 4. Load existing bookings (drives both the per-day cap inside validation and conflict checks).
   const bookingsResult = await ctx.tools.query(APP_SCOPE, 'bookings', {
     where: { hostUserId },
   })
-  console.log('[schedule-event] Existing bookings:', ((bookingsResult.data as any)?.records ?? []).length)
   const existingBookings = (bookingsResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
 
-  // Check max bookings per day
-  const maxPerDay = (avail.maxBookingsPerDay as number) ?? 0
-  if (maxPerDay > 0) {
-    const startDayYmd = formatYmdInTimezone(start, hostTimezone)
-    const sameDayBookings = existingBookings.filter((b) => {
-      if (b.data.status === 'cancelled' || b.data.status === 'no_show') return false
-      const bStart = new Date(b.data.startTime as string)
-      return formatYmdInTimezone(bStart, hostTimezone) === startDayYmd
-    })
-    if (sameDayBookings.length >= maxPerDay) {
-      return { success: false, error: 'Maximum bookings for this day has been reached' }
-    }
+  // Validate the slot against host availability (weekday/blocks/timeGap/per-day cap/overrides) via the
+  // shared helper — the single source of truth shared with reschedule-booking so the two never drift.
+  const availabilityCheck = await validateHostAvailability(ctx.tools, {
+    hostUserId,
+    start,
+    end,
+    now,
+    existingBookings,
+    availabilityScheduleId: typeof etData.availabilityScheduleId === 'string' ? etData.availabilityScheduleId : undefined,
+  })
+  if (!availabilityCheck.ok) {
+    return { success: false, error: availabilityCheck.error }
   }
+  const hostTimezone = availabilityCheck.hostTimezone
 
-  // Check for conflicts. Mirrors the client slot picker (getAvailableSlots): for a group event,
+  // 5. Check for conflicts. Mirrors the client slot picker (getAvailableSlots): for a group event,
   // count overlapping live bookings and allow until capacity is reached; otherwise any
   // buffer-expanded overlap is a conflict.
   const bufferedStart = new Date(start.getTime() - bufferBefore * 60_000)
@@ -332,33 +318,9 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     console.warn('[schedule-event] Google FreeBusy conflict check failed:', err)
   }
 
-  // Check date-specific overrides
-  const overridesResult = await ctx.tools.query(APP_SCOPE, 'availability-overrides', {
-    where: { userId: hostUserId },
-  })
-  const overrideRecords = (overridesResult.data as { records?: Array<{ data: Record<string, unknown> }> })?.records ?? []
-  // Overrides are stored as host-local calendar dates; derive the slot's date in the host tz too.
-  // (Workers' runtime tz is UTC, so getFullYear/Month/Date would resolve near-midnight slots to the
-  // wrong day — matching the maxBookingsPerDay check above which already uses formatYmdInTimezone.)
-  const slotDateStr = formatYmdInTimezone(start, hostTimezone)
-  const dateOverride = overrideRecords.find(o => o.data.date === slotDateStr)
-  if (dateOverride) {
-    if (dateOverride.data.type === 'blocked') {
-      return { success: false, error: 'Host is not available on this date (date override)' }
-    }
-    if (dateOverride.data.type === 'custom' && dateOverride.data.startTime && dateOverride.data.endTime) {
-      const overrideStart = parseTimeToMinutes(dateOverride.data.startTime as string)
-      const overrideEnd = parseTimeToMinutes(dateOverride.data.endTime as string)
-      if (slotStartMins < overrideStart || slotEndMins > overrideEnd) {
-        return { success: false, error: 'Requested time is outside availability window for this date' }
-      }
-    }
-  }
-
   // 6. Create the host calendar event FIRST. Doing this before the booking means a calendar
   // failure can't leave an orphaned confirmed booking that permanently blocks the slot; the
   // booking is then written with calendarEventId already set (no separate back-fill update).
-  console.log('[schedule-event] Step 6: Creating calendar event in user:', hostUserId)
   const calendarResult = await ctx.tools.create(`user:${hostUserId}`, 'events', {
     Title: `${eventTitle} with ${guestName}`,
     Description: description ?? '',
@@ -374,15 +336,13 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
       eventTypeId,
     }),
   })
-  console.log('[schedule-event] Calendar result:', JSON.stringify(calendarResult).slice(0, 300))
   if (!calendarResult.success) {
-    console.error('[schedule-event] Calendar event creation FAILED:', calendarResult)
+    console.error('[schedule-event] Calendar event creation failed')
     return calendarResult
   }
   const hostCalendarEventRecordId = (calendarResult.data as { record?: { recordId: string } })?.record?.recordId
 
   // 7. Create booking record in app:bookme (authoritative — drives conflict detection + slot picker)
-  console.log('[schedule-event] Step 7: Creating booking record')
   const cancelToken = crypto.randomUUID()
   const cancelTokenHash = await hashCancelToken(cancelToken)
   const bookingPayload = {
@@ -408,7 +368,6 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     ...(hostCalendarEventRecordId ? { calendarEventId: hostCalendarEventRecordId } : {}),
   }
   const bookingResult = await ctx.tools.create(APP_SCOPE, 'bookings', bookingPayload)
-  console.log('[schedule-event] Booking result:', JSON.stringify(bookingResult).slice(0, 300))
   if (!bookingResult.success) {
     // Roll back the calendar event we just created so it can't block the slot on retry.
     if (hostCalendarEventRecordId) {
@@ -452,70 +411,98 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     '',
     formatDualPartyTimeRangeForDm(start.toISOString(), end.toISOString(), guestTzForMail, hostTimezone),
   ].join('\n')
+  // The team channel below is public; omit the guest's email there. The private dir:mail thread
+  // (participants only, sent further down) keeps the full body including the email.
+  const slackNotificationBody = [
+    `📅 New booking: ${eventTitle}`,
+    `Guest: ${guestName}`,
+    '',
+    formatDualPartyTimeRangeForDm(start.toISOString(), end.toISOString(), guestTzForMail, hostTimezone),
+  ].join('\n')
 
-  const slackDirScope = 'dir:teams'
-  const slackChannelQuery = await ctx.tools.query(slackDirScope, 'conversations', {
-    where: { Name: 'bookings' },
-    limit: 1,
-  })
-  const slackChannels = (slackChannelQuery.data as { records?: Array<{ recordId: string }> })?.records ?? []
-  let slackChannelId: string | undefined = slackChannels[0]?.recordId
-
-  if (!slackChannelId) {
-    const createResult = await ctx.tools.create(slackDirScope, 'conversations', {
-      Name: 'bookings',
-      Description: 'Booking notifications from BookMe',
-      Type: 'public',
-      Visibility: 'public',
-      CreatedBy: ctx.userId,
-      ParticipantHash: '',
-      ParticipantIds: '',
-      Status: 'active',
-      AssigneeId: '',
-      LinkedRef: '',
-      LastMessageAt: new Date().toISOString(),
-      LastMessagePreview: notificationBody.slice(0, 100),
-      LastMessageAuthor: ctx.userId,
+  // All post-commit side effects (cross-app notifications + confirmation email) are best-effort:
+  // the booking row and host calendar event are already persisted above, so a failure here must NOT
+  // surface as a failed booking (which would prompt a retry and double-book the slot). Swallow + log.
+  try {
+    const slackDirScope = 'dir:teams'
+    const slackChannelQuery = await ctx.tools.query(slackDirScope, 'conversations', {
+      where: { Name: 'bookings' },
+      limit: 1,
     })
-    slackChannelId = (createResult.data as { recordId?: string })?.recordId
+    const slackChannels = (slackChannelQuery.data as { records?: Array<{ recordId: string }> })?.records ?? []
+    let slackChannelId: string | undefined = slackChannels[0]?.recordId
+
+    if (!slackChannelId) {
+      const createResult = await ctx.tools.create(slackDirScope, 'conversations', {
+        Name: 'bookings',
+        Description: 'Booking notifications from BookWithMe',
+        Type: 'public',
+        Visibility: 'public',
+        CreatedBy: ctx.userId,
+        ParticipantHash: '',
+        ParticipantIds: '',
+        Status: 'active',
+        AssigneeId: '',
+        LinkedRef: '',
+        LastMessageAt: new Date().toISOString(),
+        LastMessagePreview: slackNotificationBody.slice(0, 100),
+        LastMessageAuthor: ctx.userId,
+      })
+      slackChannelId = (createResult.data as { recordId?: string })?.recordId
+    }
+
+    if (slackChannelId) {
+      await ctx.tools.create(`conv:${slackChannelId}`, 'conv_messages', {
+        Content: slackNotificationBody,
+        AuthorId: ctx.userId,
+        ParentId: '',
+        Edited: 0,
+        MessageType: 'system',
+        Metadata: JSON.stringify({ source: 'book-me', eventTypeId }),
+      })
+      await ctx.tools.update(slackDirScope, 'conversations', slackChannelId, {
+        LastMessageAt: new Date().toISOString(),
+        LastMessagePreview: slackNotificationBody.slice(0, 100),
+        LastMessageAuthor: ctx.userId,
+      })
+    }
+
+    // DeepSpace Mail (dir:mail) — only when sendDeepSpaceMail (see lib/dir-mail-booking-notify.ts).
+    await createDirMailBookingNotification(ctx, {
+      sendDeepSpaceMail,
+      eventTypeId,
+      participantHash: `booking-${eventTypeId}-${start.toISOString()}`,
+      conversationTitle: `Booking Confirmed: ${eventTitle}`,
+      messageBody: notificationBody,
+      guestName,
+      hostUserId,
+      guestUserId,
+    })
+  } catch (err) {
+    console.warn('[schedule-event] post-commit notifications failed:', err)
   }
 
-  if (slackChannelId) {
-    await ctx.tools.create(`conv:${slackChannelId}`, 'conv_messages', {
-      Content: notificationBody,
-      AuthorId: ctx.userId,
-      ParentId: '',
-      Edited: 0,
-      MessageType: 'system',
-      Metadata: JSON.stringify({ source: 'book-me', eventTypeId }),
-    })
-    await ctx.tools.update(slackDirScope, 'conversations', slackChannelId, {
-      LastMessageAt: new Date().toISOString(),
-      LastMessagePreview: notificationBody.slice(0, 100),
-      LastMessageAuthor: ctx.userId,
-    })
-  }
-
-  // DeepSpace Mail (dir:mail) — only when sendDeepSpaceMail (see lib/dir-mail-booking-notify.ts).
-  await createDirMailBookingNotification(ctx, {
-    sendDeepSpaceMail,
-    eventTypeId,
-    participantHash: `booking-${eventTypeId}-${start.toISOString()}`,
-    conversationTitle: `Booking Confirmed: ${eventTitle}`,
-    messageBody: notificationBody,
-    guestName,
-    hostUserId,
-    guestUserId,
-  })
-
-  const sendThisConfirmation = sendConfirmationEmailParam !== false
-  if (sendExternalEmail && sendThisConfirmation) {
-    try {
+  // Confirmation email — its OWN independent try/catch so a Slack/dir-mail failure above (e.g. an
+  // unprovisioned dir:teams scope) can never prevent the guest/host confirmation from being sent.
+  // Two independent gates:
+  //  - `sendExternalEmail` (event-type level) is the master switch for transactional email.
+  //  - `sendConfirmationEmailParam` is the per-occurrence gate (false for recurring occurrences after
+  //    the first), so the whole batch is skipped for those — the host is emailed once, not per occurrence.
+  // Within an emailing occurrence, `sendGuestEmailParam` controls only the guest's copy; the host is
+  // still notified even when the guest opts out.
+  try {
+    const emailThisOccurrence = sendConfirmationEmailParam !== false
+    if (sendExternalEmail && emailThisOccurrence) {
       let extra = typeof additionalInfo === 'string' ? additionalInfo : ''
       if (recurrence && recurrence !== 'none') {
         extra = extra ? `${extra}\n\n` : ''
         extra += `This is a recurring ${recurrence} meeting.`
       }
+      // Guest self-service link: the RAW cancelToken (only its SHA-256 hash is stored) lets a
+      // logged-out guest cancel/reschedule from /manage. Built only when the client passed an origin.
+      const origin = typeof originParam === 'string' ? originParam.trim().replace(/\/+$/, '') : ''
+      const bookingRecordId = (bookingResult.data as { recordId?: string } | undefined)?.recordId
+      const manageUrl = origin && bookingRecordId ? `${origin}/manage/${bookingRecordId}/${cancelToken}` : undefined
       const sends = buildConfirmedBookingSends({
         hostName: hostDisplayName || 'Host',
         hostEmail: hostDisplayEmail,
@@ -528,14 +515,18 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
         additionalInfo: extra || undefined,
         guestTimezone,
         hostTimezone,
+        sendGuestEmail: sendGuestEmailParam !== false,
+        manageUrl,
       })
-      const emailResult = await sendTransactionalEmailBatch(ctx.tools, sends)
-      if (!emailResult.ok) {
-        console.warn('[schedule-event] email/send:', emailResult.errors.join('; '))
+      if (sends.length > 0) {
+        const emailResult = await sendTransactionalEmailBatch(ctx.tools, sends)
+        if (!emailResult.ok) {
+          console.warn('[schedule-event] email/send:', emailResult.errors.join('; '))
+        }
       }
-    } catch (err) {
-      console.warn('[schedule-event] transactional email failed:', err)
     }
+  } catch (err) {
+    console.warn('[schedule-event] confirmation email failed:', err)
   }
 
   const calendarData = calendarResult.data as { record?: { recordId: string } } | undefined

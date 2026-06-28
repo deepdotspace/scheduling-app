@@ -5,14 +5,13 @@
  */
 
 import {
-  addCalendarDays,
   getDayOfWeekInTimezone,
   getZonedYMDHM,
   zonedWallTimeToUtc,
 } from './lib/zoned-time'
 
 /** App slug — must match deploy / worker APP_NAME */
-export const APP_NAME = 'book2me'
+export const APP_NAME = 'bookwithme'
 
 export const SCOPE_ID = `app:${APP_NAME}`
 
@@ -30,9 +29,6 @@ export function buildVideoCallMeetingUrl(roomId: string): string {
   }
   return `${VIDEO_CALL_BASE_URL}/call/${id}`
 }
-
-/** Shared DO connections. Empty by default — add entries to connect to shared DOs. */
-export const SHARED_CONNECTIONS: { type: string; instanceId?: string }[] = []
 
 // Days of the week
 export const DAYS_OF_WEEK = [
@@ -70,14 +66,22 @@ export const EVENT_DURATIONS = [
 
 // Meeting locations
 export const MEETING_LOCATIONS = [
-  { value: 'deepspace-meets', label: 'DeepSpace Meets', icon: '🚀' },
-  { value: 'google-meet', label: 'Google Meet', icon: '📹' },
-  { value: 'zoom', label: 'Zoom', icon: '💻' },
-  { value: 'phone', label: 'Phone Call', icon: '📞' },
-  { value: 'in-person', label: 'In Person', icon: '🏢' },
+  { value: 'deepspace-meets', label: 'DeepSpace Meets' },
+  { value: 'phone', label: 'Phone Call' },
+  { value: 'in-person', label: 'In Person' },
 ] as const
 
 export type MeetingLocation = typeof MEETING_LOCATIONS[number]['value']
+
+/** An event type's location may also be left undecided ("Not determined"). */
+export type EventTypeLocation = MeetingLocation | 'undetermined'
+
+/** Display label for any stored location value, including the "Not determined" placeholder. */
+export function meetingLocationLabel(value?: string): string {
+  if (!value) return '—'
+  if (value === 'undetermined') return 'Not determined'
+  return MEETING_LOCATIONS.find(l => l.value === value)?.label ?? value
+}
 
 // Buffer time options (minutes)
 export const BUFFER_OPTIONS = [
@@ -106,7 +110,7 @@ export interface EventType {
   title: string
   description: string
   duration: number
-  location: MeetingLocation
+  location: EventTypeLocation
   isActive: boolean
   color: string
   /** When true, send DeepSpace Mail directory + in-app DM notifications for bookings (see server + client hooks). */
@@ -299,19 +303,6 @@ export const EVENT_COLORS = [
   '#FFc20E',
 ] as const
 
-/** Convert a hex color to a misty/pastel version (blended with white) for card backgrounds */
-export function toMistyColor(hex: string, whiteAmount = 0.72): string {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-  if (!result) return '#E8E8E8'
-  const r = parseInt(result[1], 16)
-  const g = parseInt(result[2], 16)
-  const b = parseInt(result[3], 16)
-  const wr = Math.round(255 * whiteAmount + r * (1 - whiteAmount))
-  const wg = Math.round(255 * whiteAmount + g * (1 - whiteAmount))
-  const wb = Math.round(255 * whiteAmount + b * (1 - whiteAmount))
-  return '#' + [wr, wg, wb].map(x => x.toString(16).padStart(2, '0')).join('')
-}
-
 // Generate random ID
 export function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2)
@@ -379,27 +370,10 @@ export function getAvailableSlots(
   const bufferBefore = options?.bufferBefore ?? 0
   const bufferAfter = options?.bufferAfter ?? 0
   const hostTz = availability.timezone || 'UTC'
+  const overrides = options?.overrides ?? []
+  const maxPerDay = availability.maxBookingsPerDay ?? 0
 
   const civil = getZonedYMDHM(selectedDate, displayTimezone)
-  const dateStr = `${civil.year}-${String(civil.month).padStart(2, '0')}-${String(civil.day).padStart(2, '0')}`
-
-  const override = options?.overrides?.find(o => o.date === dateStr)
-  if (override?.type === 'blocked') return []
-
-  const maxPerDay = availability.maxBookingsPerDay ?? 0
-  if (maxPerDay > 0) {
-    const dayStartUtc = zonedWallTimeToUtc(civil.year, civil.month, civil.day, 0, 0, displayTimezone)
-    const nextCivil = addCalendarDays(civil.year, civil.month, civil.day, 1)
-    const nextDayUtc = zonedWallTimeToUtc(nextCivil.year, nextCivil.month, nextCivil.day, 0, 0, displayTimezone)
-    if (dayStartUtc && nextDayUtc) {
-      const sameDayBookings = existingBookings.filter(b => {
-        if (b.status === 'cancelled' || b.status === 'no_show') return false
-        const bStart = new Date(b.startTime)
-        return bStart >= dayStartUtc && bStart < nextDayUtc
-      })
-      if (sameDayBookings.length >= maxPerDay) return []
-    }
-  }
 
   const now = new Date()
   const minStartUtc = new Date(now.getTime() + availability.timeGap * 60_000)
@@ -408,10 +382,29 @@ export function getAvailableSlots(
   const maxAtt = options?.maxAttendees ?? 0
   const isGroupEvent = maxAtt > 1
 
+  // host-tz calendar date (YYYY-MM-DD) for a UTC instant. maxBookingsPerDay grouping and override
+  // lookups are HOST concepts and must be evaluated per slot in the host's zone — one booker civil
+  // day can straddle two host-tz days — mirroring the server's per-slot formatYmdInTimezone(start, hostTz).
+  const hostYmd = (d: Date): string => {
+    const z = getZonedYMDHM(d, hostTz)
+    return `${z.year}-${String(z.month).padStart(2, '0')}-${String(z.day).padStart(2, '0')}`
+  }
+
   const tryAddSlot = (slotStart: Date): void => {
     if (slotStart.getTime() < minStartUtc.getTime()) return
 
     const slotEnd = new Date(slotStart.getTime() + duration * 60000)
+
+    // Per-day booking cap — counted on the slot's own host-tz calendar day (matches the server).
+    if (maxPerDay > 0) {
+      const slotHostDay = hostYmd(slotStart)
+      const sameDayBookings = existingBookings.filter(b => {
+        if (b.status === 'cancelled' || b.status === 'no_show') return false
+        return hostYmd(new Date(b.startTime)) === slotHostDay
+      })
+      if (sameDayBookings.length >= maxPerDay) return
+    }
+
     const bufferedStart = new Date(slotStart.getTime() - bufferBefore * 60000)
     const bufferedEnd = new Date(slotEnd.getTime() + bufferAfter * 60000)
 
@@ -444,23 +437,6 @@ export function getAvailableSlots(
     }
   }
 
-  // Custom day: windows are stored as host-local HH:MM on override.date (Gregorian)
-  if (override?.type === 'custom' && override.startTime && override.endTime) {
-    const [y, mo, d] = dateStr.split('-').map(s => parseInt(s, 10))
-    const oStart = parseTimeToMinutes(override.startTime)
-    const oEnd = parseTimeToMinutes(override.endTime)
-    for (let hm = oStart; hm + duration <= oEnd; hm += 30) {
-      const sh = Math.floor(hm / 60)
-      const sm = hm % 60
-      const slotStart = zonedWallTimeToUtc(y, mo, d, sh, sm, hostTz)
-      if (!slotStart) continue
-      const zDisp = getZonedYMDHM(slotStart, displayTimezone)
-      if (zDisp.year !== civil.year || zDisp.month !== civil.month || zDisp.day !== civil.day) continue
-      tryAddSlot(slotStart)
-    }
-    return slots
-  }
-
   for (let dayMins = 0; dayMins < 24 * 60; dayMins += 30) {
     const h = Math.floor(dayMins / 60)
     const m = dayMins % 60
@@ -473,9 +449,13 @@ export function getAvailableSlots(
     }
 
     const slotEnd = new Date(slotStart.getTime() + duration * 60_000)
-    const hostDay = getDayOfWeekInTimezone(slotStart, hostTz)
-    const daySettings = normalizeDaySettings(availability[hostDay])
-    if (!daySettings.isAvailable) continue
+
+    // Resolve the override for THIS slot's host-tz date: blocked → unavailable; custom → its window
+    // replaces the weekday blocks for the slot. Evaluated per slot so near-midnight slots that land on
+    // an adjacent host date pick up the correct override (and the cap from the correct day).
+    const slotHostDay = hostYmd(slotStart)
+    const override = overrides.find(o => o.date === slotHostDay)
+    if (override?.type === 'blocked') continue
 
     const hostStart = getZonedYMDHM(slotStart, hostTz)
     const hostEnd = getZonedYMDHM(slotEnd, hostTz)
@@ -490,12 +470,22 @@ export function getAvailableSlots(
       hostEnd.day === hostStart.day
     const slotEndMins = hostEndSameDay ? hostEnd.hour * 60 + hostEnd.minute : 24 * 60
 
-    const inBlock = daySettings.blocks.some(b => {
-      const availStart = parseTimeToMinutes(b.startTime)
-      const availEnd = parseTimeToMinutes(b.endTime)
-      return slotStartMins >= availStart && slotEndMins <= availEnd
-    })
-    if (!inBlock) continue
+    let inWindow: boolean
+    if (override?.type === 'custom' && override.startTime && override.endTime) {
+      const oStart = parseTimeToMinutes(override.startTime)
+      const oEnd = parseTimeToMinutes(override.endTime)
+      inWindow = slotStartMins >= oStart && slotEndMins <= oEnd
+    } else {
+      const hostDay = getDayOfWeekInTimezone(slotStart, hostTz)
+      const daySettings = normalizeDaySettings(availability[hostDay])
+      if (!daySettings.isAvailable) continue
+      inWindow = daySettings.blocks.some(b => {
+        const availStart = parseTimeToMinutes(b.startTime)
+        const availEnd = parseTimeToMinutes(b.endTime)
+        return slotStartMins >= availStart && slotEndMins <= availEnd
+      })
+    }
+    if (!inWindow) continue
 
     tryAddSlot(slotStart)
   }
@@ -577,14 +567,6 @@ export function getTimezoneLabel(tz: string): string {
   }
 }
 
-/** Convert 24h time string "HH:MM" to 12h format "h:MM AM/PM" */
-export function formatTime12h(time: string): string {
-  const [h, m] = time.split(':').map(Number)
-  const period = h >= 12 ? 'PM' : 'AM'
-  const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h
-  return `${hour12}:${m.toString().padStart(2, '0')} ${period}`
-}
-
 export {
   formatInstantInTimezone,
   formatDateInTimezone,
@@ -610,7 +592,7 @@ export function generateIcsContent(params: {
   return [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//BookMe//EN',
+    'PRODID:-//BookWithMe//EN',
     'BEGIN:VEVENT',
     `DTSTART:${fmt(params.startTime)}`,
     `DTEND:${fmt(params.endTime)}`,

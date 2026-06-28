@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useMemo } from 'react'
-import { useQuery, useMutations, useUser, getAuthToken } from 'deepspace'
+import { useQuery, useUser, getAuthToken } from 'deepspace'
 import type { Booking } from '../constants'
 import { clearBookingRescheduleAudit } from '../lib/reschedule-audit-storage'
 
@@ -54,7 +54,6 @@ interface UseBookingsReturn {
   hostedBookings: BookingWithRole[]
   /** Bookings where user is the guest (you booked with others) */
   bookedByYou: BookingWithRole[]
-  createBooking: (booking: Omit<Booking, 'id' | 'createdAt' | 'status'>) => Booking
   /** Server action: updates booking and removes platform calendar busy blocks */
   cancelBooking: (id: string) => Promise<{ success: boolean; error?: string }>
   /** Host-only: mark a past confirmed meeting as no-show (server action). */
@@ -64,15 +63,12 @@ interface UseBookingsReturn {
   /** Permanently remove booking (past, cancelled, or no-show only; server action). */
   deleteBookingPermanently: (id: string) => Promise<{ success: boolean; error?: string }>
   getBooking: (id: string) => Booking | undefined
-  getBookingsForHost: (hostUserId: string) => Booking[]
-  getBookingsForDate: (date: Date) => Booking[]
   ready: boolean
 }
 
 export function useBookings(): UseBookingsReturn {
   const { user } = useUser()
   const { records, status } = useQuery<any>('bookings')
-  const { create } = useMutations<any>('bookings')
 
   // Map records to Booking objects
   const bookings = useMemo((): Booking[] => {
@@ -109,35 +105,6 @@ export function useBookings(): UseBookingsReturn {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
   }, [records])
 
-  const createBooking = useCallback((
-    data: Omit<Booking, 'id' | 'createdAt' | 'status'>
-  ): Booking => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`
-
-    create({
-      eventTypeId: data.eventTypeId,
-      eventTitle: data.eventTitle,
-      hostUserId: data.hostUserId,
-      hostName: data.hostName,
-      hostEmail: data.hostEmail,
-      guestName: data.guestName,
-      guestEmail: data.guestEmail,
-      guestUserId: data.guestUserId,
-      startTime: data.startTime,
-      endTime: data.endTime,
-      meetingLink: data.meetingLink,
-      additionalInfo: data.additionalInfo,
-      status: 'confirmed',
-    })
-
-    return {
-      ...data,
-      id,
-      createdAt: new Date().toISOString(),
-      status: 'confirmed',
-    }
-  }, [create])
-
   const cancelBooking = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
     const result = await postBookingAction('/api/actions/cancel-booking', id)
     if (result.success) {
@@ -164,15 +131,6 @@ export function useBookings(): UseBookingsReturn {
 
   const getBooking = useCallback((id: string): Booking | undefined => {
     return bookings.find(b => b.id === id)
-  }, [bookings])
-
-  const getBookingsForHost = useCallback((hostUserId: string): Booking[] => {
-    return bookings.filter(b => b.hostUserId === hostUserId)
-  }, [bookings])
-
-  const getBookingsForDate = useCallback((date: Date): Booking[] => {
-    const dateStr = date.toISOString().split('T')[0]
-    return bookings.filter(b => b.startTime.startsWith(dateStr))
   }, [bookings])
 
   // Filter bookings for current user (as host OR guest) with role indicator
@@ -222,14 +180,11 @@ export function useBookings(): UseBookingsReturn {
     cancelledBookings,
     hostedBookings,
     bookedByYou,
-    createBooking,
     cancelBooking,
     markBookingNoShow,
     undoBookingNoShow,
     deleteBookingPermanently,
     getBooking,
-    getBookingsForHost,
-    getBookingsForDate,
     ready: status !== 'loading',
   }
 }

@@ -1,4 +1,4 @@
-name = "book2me"
+name = "bookwithme"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 main = "worker.ts"
@@ -22,12 +22,8 @@ bindings = [
   { name = "PRESENCE_ROOMS", class_name = "AppPresenceRoom" },
 ]
 
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "book2me-files"
-
 [vars]
-APP_NAME = "book2me"
+APP_NAME = "bookwithme"
 # Same host as deepspace client `PROD_CONFIG.platformWorkerUrl` — used when `PLATFORM_WORKER` service binding is absent (local dev).
 PLATFORM_WORKER_URL = "https://deepspace-platform-worker.eudaimonicincorporated.workers.dev"
 # Override in dashboard / .dev.vars — must match a verified sender in Resend (or your provider).

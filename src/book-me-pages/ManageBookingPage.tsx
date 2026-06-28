@@ -1,7 +1,7 @@
 /**
  * Manage Booking Page
  *
- * Guest self-service: cancel or reschedule a booking via token.
+ * Guest self-service: cancel a booking via token.
  * Route: /manage/:bookingId/:token
  */
 
@@ -15,7 +15,7 @@ import { getAuthToken } from 'deepspace'
 
 export default function ManageBookingPage() {
   const { bookingId, token } = useParams<{ bookingId: string; token: string }>()
-  const { bookings } = useBookings()
+  const { bookings, ready } = useBookings()
   const { notifyCancellation } = useBookingNotification()
 
   const [isCancelling, setIsCancelling] = useState(false)
@@ -78,7 +78,6 @@ export default function ManageBookingPage() {
             eventTitle: booking.eventTitle,
             startTime: booking.startTime,
             endTime: booking.endTime,
-            sendCancellationEmailToo: eventTypeForNotify?.sendExternalEmail ?? true,
             sendDeepSpaceMail: eventTypeForNotify?.sendDeepSpaceMail ?? true,
             guestTimezone: booking.guestTimezone?.trim() || undefined,
             hostTimezone:
@@ -195,6 +194,13 @@ export default function ManageBookingPage() {
                   </Button>
                 </div>
               )}
+            </div>
+          ) : ready ? (
+            <div className="text-center py-8">
+              <p className="text-gray-900 font-medium mb-1">Booking not found</p>
+              <p className="text-gray-600 text-sm">
+                This booking may have been removed, or the link is no longer valid.
+              </p>
             </div>
           ) : (
             <div className="text-center py-8">

@@ -14,7 +14,7 @@ export default function App() {
       <AuthGate>
         <PlatformProvider>
           <GuestBanner
-            message="You're signed out. Sign in with Google to use Book Me with your DeepSpace account."
+            message="You're signed out. Sign in with Google to use BookWithMe with your DeepSpace account."
             onSignIn={() => {
               window.location.href = '/api/auth/social-redirect?provider=google'
             }}

@@ -93,7 +93,7 @@ export function buildBookMeEmail(opts: BookMeEmailOptions): string {
         <tr><td style="background:#111111;border-radius:8px 8px 0 0;padding:18px 28px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
             <td style="vertical-align:middle;">
-              <span style="font-size:17px;font-weight:900;font-style:italic;color:#ffffff;letter-spacing:-0.3px;">Book Me</span>
+              <span style="font-size:17px;font-weight:900;font-style:italic;color:#ffffff;letter-spacing:-0.3px;">BookWithMe</span>
             </td>
             <td align="right" style="vertical-align:middle;"><span style="display:inline-block;background:${badge.color};color:#ffffff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:0.5px;text-transform:uppercase;">${badge.label}</span></td>
           </tr></table>
@@ -114,7 +114,7 @@ export function buildBookMeEmail(opts: BookMeEmailOptions): string {
         </td></tr>
         <tr><td style="background:#F9FAFB;border-top:1px solid #E5E7EB;border-radius:0 0 8px 8px;padding:16px 28px;">
           <p style="margin:0;font-size:12px;color:#9CA3AF;line-height:1.6;">
-            This email was sent by <strong style="color:#6B7280;">BookMe</strong> on behalf of ${hostName}.${footerReply}
+            This email was sent by <strong style="color:#6B7280;">BookWithMe</strong> on behalf of ${hostName}.${footerReply}
           </p>
         </td></tr>
       </table>
@@ -143,9 +143,15 @@ export interface ConfirmedBookingEmailInput {
   additionalInfo?: string
   guestTimezone?: string
   hostTimezone?: string
+  /** When false, suppress the guest's confirmation email (their per-booking choice). The host's
+   *  new-booking email is still produced. Defaults to true. */
+  sendGuestEmail?: boolean
+  /** Absolute guest self-service URL (/manage/:bookingId/:token). Adds a Manage/Cancel button to the
+   *  guest's confirmation email when provided. */
+  manageUrl?: string
 }
 
-/** One or two sends (guest + host) for booking confirmed — mirrors prior client behavior. */
+/** One or two sends (guest + host) for booking confirmed. The guest copy is gated by sendGuestEmail. */
 export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): TransactionalEmailSend[] {
   const guestTz = resolveIanaTimezone(p.guestTimezone)
   const hostTz = resolveIanaTimezone(p.hostTimezone)
@@ -169,11 +175,55 @@ export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): Trans
   const guestTo = p.guestEmail.trim()
   const hostTo = p.hostEmail.trim()
   if (!guestTo) return []
+  const includeGuest = p.sendGuestEmail !== false
+
+  // Guest-facing buttons: Join + Add to Calendar, plus the self-service Manage link when available.
+  // The /manage page (ManageBookingPage) only offers cancellation, so the label is "Cancel booking"
+  // and must not promise reschedule until a token-aware reschedule entry point exists.
+  const guestActionButtons: EmailActionButton[] = [
+    { href: p.meetingLink, label: 'Join Meeting', primary: true },
+    { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
+    ...(p.manageUrl ? [{ href: p.manageUrl, label: 'Cancel booking', primary: false }] : []),
+  ]
 
   const sameAddress =
     hostTo !== '' && guestTo !== '' && guestTo.toLowerCase() === hostTo.toLowerCase()
 
   if (sameAddress) {
+    // One inbox serves both parties. If the guest opted out of their confirmation, still send the
+    // host their new-booking notification to that shared inbox — the host's email is never dropped
+    // just because the same address also happens to be the guest's (matches the sendGuestEmail
+    // contract: the host's new-booking email is still produced).
+    if (!includeGuest) {
+      const hostOnlyHtml = buildBookMeEmail({
+        headline: 'New booking',
+        badge: { label: 'Confirmed', color: '#10b981' },
+        recipientName: escapeHtmlForEmail(p.hostName),
+        introHtml: `<strong>${escapeHtmlForEmail(p.guestName)}</strong> (${escapeHtmlForEmail(guestTo)}) booked a meeting with you.`,
+        cardTitle: p.eventTitle,
+        detailRows: [
+          { label: 'Guest', value: escapeHtmlForEmail(p.guestName) },
+          { label: 'Guest email', value: escapeHtmlForEmail(guestTo) },
+          ...detailRowsHost,
+        ],
+        actionButtons: [
+          { href: p.meetingLink, label: 'Join Meeting', primary: true },
+          { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
+        ],
+        closingLine: 'You will see this meeting in your BookWithMe calendar.',
+        hostName: p.hostName,
+        hostEmail: p.hostEmail,
+        footerReplyEmail: guestTo,
+      })
+      return [
+        {
+          to: hostTo,
+          subject: `New booking: ${p.eventTitle} — ${p.guestName}`,
+          html: hostOnlyHtml,
+          replyTo: guestTo,
+        },
+      ]
+    }
     const combinedHtml = buildBookMeEmail({
       headline: 'Booking Confirmed',
       badge: { label: 'Confirmed', color: '#10b981' },
@@ -186,10 +236,7 @@ export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): Trans
         { label: 'Host', value: escapeHtmlForEmail(p.hostName) },
         ...detailRowsGuest,
       ],
-      actionButtons: [
-        { href: p.meetingLink, label: 'Join Meeting', primary: true },
-        { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
-      ],
+      actionButtons: guestActionButtons,
       closingLine: 'Looking forward to the meeting.',
       hostName: p.hostName,
       hostEmail: p.hostEmail,
@@ -211,23 +258,21 @@ export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): Trans
     introHtml: `Your booking with <strong>${p.hostName}</strong> has been confirmed.`,
     cardTitle: p.eventTitle,
     detailRows: [...detailRowsGuest, { label: 'Host', value: p.hostName }],
-    actionButtons: [
-      { href: p.meetingLink, label: 'Join Meeting', primary: true },
-      { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
-    ],
+    actionButtons: guestActionButtons,
     closingLine: 'Looking forward to meeting with you!',
     hostName: p.hostName,
     hostEmail: p.hostEmail,
   })
 
-  const out: TransactionalEmailSend[] = [
-    {
+  const out: TransactionalEmailSend[] = []
+  if (includeGuest) {
+    out.push({
       to: guestTo,
       subject: `Booking Confirmed: ${p.eventTitle} with ${p.hostName}`,
       html: guestHtml,
       replyTo: p.hostEmail,
-    },
-  ]
+    })
+  }
 
   if (hostTo && hostTo.toLowerCase() !== guestTo.toLowerCase()) {
     const hostHtml = buildBookMeEmail({
@@ -245,7 +290,7 @@ export function buildConfirmedBookingSends(p: ConfirmedBookingEmailInput): Trans
         { href: p.meetingLink, label: 'Join Meeting', primary: true },
         { href: calendarUrl, label: 'Add to Google Calendar', primary: false },
       ],
-      closingLine: 'You will see this meeting in your BookMe calendar.',
+      closingLine: 'You will see this meeting in your BookWithMe calendar.',
       hostName: p.hostName,
       hostEmail: p.hostEmail,
       footerReplyEmail: guestTo,

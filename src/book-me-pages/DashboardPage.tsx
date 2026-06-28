@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Clock, Plus, Copy, Globe, Zap, ChevronRight, Calendar, Video, Settings, Check, ListChecks, TrendingUp, TrendingDown } from 'lucide-react'
+import { Plus, Copy, Globe, Zap, Video, Check, ListChecks, TrendingUp, TrendingDown } from 'lucide-react'
 import { useUser, useUserLookup } from 'deepspace'
 import { useEventTypes, useBookings, useProfile, useIntegrations, useAvailability, showToast } from '../hooks'
 import { getBookMeDisplayIdentity } from '../lib/book-me-identity'
@@ -629,11 +629,11 @@ export default function DashboardPage() {
               {stats.map((stat, i) => (
                 <div key={i} className="app-card p-4">
                   <p className="text-[12px] font-bold text-black uppercase tracking-wider mb-2">{stat.label}</p>
-                  <div className="flex items-end justify-between gap-4">
-                    <span className="text-2xl font-bold tracking-tight">{stat.value}</span>
-                    <div className="flex flex-col items-end shrink-0">
+                  <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+                    <span className="text-2xl font-bold tracking-tight shrink-0">{stat.value}</span>
+                    <div className="flex flex-col items-end min-w-0 ml-auto">
                       <span
-                        className={`flex items-center gap-1 text-[12px] font-bold ${
+                        className={`flex items-center gap-1 whitespace-nowrap text-[12px] font-bold ${
                           stat.neutral
                             ? 'text-gray-500'
                             : stat.isUp
@@ -647,7 +647,7 @@ export default function DashboardPage() {
                         {stat.change}
                       </span>
                       {stat.subtext && (
-                        <p className="text-[11px] text-gray-500 font-medium mt-0.5">{stat.subtext}</p>
+                        <p className="text-[11px] text-gray-500 font-medium mt-0.5 text-right break-words max-w-full">{stat.subtext}</p>
                       )}
                     </div>
                   </div>

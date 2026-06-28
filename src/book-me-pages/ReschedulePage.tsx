@@ -64,7 +64,7 @@ function ReschedulePageChrome({ onBack, children }: { onBack: () => void; childr
           </button>
           <div className="flex items-center gap-2 text-[#111827] min-w-0 justify-center flex-1">
             <CalendarCheck className="w-5 h-5 shrink-0" strokeWidth={2} />
-            <span className="font-black italic tracking-tight text-base hidden sm:inline">Book Me</span>
+            <span className="font-black italic tracking-tight text-base hidden sm:inline">BookWithMe</span>
             <span className="text-[#6B7280] font-semibold text-sm truncate">· Reschedule</span>
           </div>
           <div className="w-[72px] sm:w-[88px] shrink-0" aria-hidden />
@@ -526,6 +526,10 @@ export default function ReschedulePage() {
 
   const handleSubmit = async () => {
     if (!bookingId || !booking || !selectedDate || !selectedSlotIso || !email || !reasonForChange) return
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setSubmitError('Please enter a valid email address.')
+      return
+    }
     setIsSubmitting(true)
     setSubmitError(null)
     const oldStartTime = booking.startTime
@@ -609,7 +613,6 @@ export default function ReschedulePage() {
         meetingLink: booking.meetingLink ?? '',
         additionalInfo: booking.additionalInfo,
         reasonForChange: auditReason,
-        sendRescheduleEmailToo: eventType?.sendExternalEmail ?? true,
         sendDeepSpaceMail: eventType?.sendDeepSpaceMail ?? true,
         guestTimezone: guestTimezoneForEmail,
         hostTimezone: booking.hostTimezone?.trim() || hostAvailability.timezone,

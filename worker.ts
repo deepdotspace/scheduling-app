@@ -90,7 +90,6 @@ export class AppCronRoom extends CronRoom<Env> {
 
 interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   ASSETS: Fetcher
-  FILES: R2Bucket
   /** Production service binding; local dev uses `PLATFORM_WORKER_URL` in `.dev.vars` instead. */
   PLATFORM_WORKER?: Fetcher
   /** HTTPS base for the DeepSpace platform worker (injected by `deepspace dev` or set manually). */
@@ -312,10 +311,10 @@ app.all('/api/integrations/:path{.+}', async (c) => {
       headers,
       body,
     })
-    // Log email-related integration calls to aid debugging
+    // Log email-related integration calls to aid debugging (status only — never the response body,
+    // which can echo recipient addresses and other PII).
     if (rest.includes('email')) {
-      const responseText = await res.clone().text()
-      console.log(`[integration-proxy] ${c.req.method} ${rest} → HTTP ${res.status}`, responseText.slice(0, 300))
+      console.log(`[integration-proxy] ${c.req.method} ${rest} → HTTP ${res.status}`)
     }
     return new Response(res.body, { status: res.status, headers: res.headers })
   } catch (err) {
@@ -388,16 +387,34 @@ app.get('/ws/presence/:scopeId', wsRoute(
 // Server actions
 // ---------------------------------------------------------------------------
 
+// Guest self-service actions: a logged-out guest can invoke these from a confirmation-email link
+// WITHOUT a JWT, authorized solely by the per-booking cancelToken they carry (the action verifies the
+// SHA-256 token match before mutating anything). The 401 gate is bypassed only for this exact set and
+// only when a cancelToken is actually present.
+const GUEST_TOKEN_ACTIONS = new Set(['cancel-booking', 'reschedule-booking'])
+
 app.post('/api/actions/:name', async (c) => {
-  const auth = await resolveAuth(c.req.raw, c.env)
-  if (!auth) return c.json({ error: 'Unauthorized' }, 401)
   const name = c.req.param('name')
   const action = actions[name]
   if (!action) return c.json({ error: 'Action not found' }, 404)
+
   const params = await c.req.json<Record<string, unknown>>()
-  const callerJwt = c.req.header('Authorization')!.slice(7)
-  const tools = createActionTools(c.env, auth.userId, callerJwt)
-  const result = await action({ userId: auth.userId, params, tools })
+  const auth = await resolveAuth(c.req.raw, c.env)
+
+  const hasGuestToken =
+    GUEST_TOKEN_ACTIONS.has(name) &&
+    typeof params.cancelToken === 'string' &&
+    params.cancelToken.trim().length > 0
+
+  if (!auth && !hasGuestToken) return c.json({ error: 'Unauthorized' }, 401)
+
+  // Empty userId for the guest-token path: the action self-authorizes via hasValidToken, and the
+  // x-app-action header in createActionTools bypasses per-user RBAC for the booking mutation.
+  const userId = auth?.userId ?? ''
+  const authHeader = c.req.header('Authorization')
+  const callerJwt = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : ''
+  const tools = createActionTools(c.env, userId, callerJwt)
+  const result = await action({ userId, params, tools })
   return c.json(result as unknown as Record<string, unknown>)
 })
 

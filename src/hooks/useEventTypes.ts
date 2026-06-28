@@ -95,8 +95,11 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
         title: (rec.data as any).title ?? '',
         description: (rec.data as any).description ?? '',
         duration: (rec.data as any).duration ?? 30,
-        location: (rec.data as any).location ?? 'google-meet',
-        isActive: (rec.data as any).isActive ?? true,
+        location: (rec.data as any).location ?? 'deepspace-meets',
+        // Stored in a `text` column, so the SDK returns the literal string "true"/"false" (no
+        // boolean decode on read). Without toBool, "false" is truthy and the event never reads as
+        // inactive — the card won't grey out and its booking link stays live after deactivating.
+        isActive: toBool((rec.data as any).isActive, true),
         color: (rec.data as any).color ?? EVENT_COLORS[0],
         sendDeepSpaceMail: toBool((rec.data as any).sendDeepSpaceMail, false),
         sendGoogleCalendarInvite: toBool((rec.data as any).sendGcalInvite, false),
@@ -209,7 +212,10 @@ export function useEventTypes(forUserId?: string): UseEventTypesReturn {
     const eventType = eventTypes.find(et => et.id === id)
     if (!eventType) return
 
-    put(id, toEventRecordData({ ...eventType, isActive: !eventType.isActive }))
+    // `put` is a partial merge (SDK 0.4.3): send only the changed field. Re-sending the whole
+    // record would include the immutable/userBound `userId`, which the server rejects whenever the
+    // stored value differs from what we send — silently no-opping the toggle.
+    put(id, { isActive: !eventType.isActive })
   }, [eventTypes, isOwner, put])
 
   const getEventType = useCallback((id: string): EventType | undefined => {

@@ -233,7 +233,6 @@ export default function BookingPage() {
 
     const googlePromise = getGoogleEvents(startIso, endIso)
       .then(events => {
-        console.log('[BookMe] Google Calendar events fetched:', events.length, events)
         return (events as Array<{ start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string }; summary?: string }>).map((ev): GuestCalendarEvent => ({
           start: ev.start?.dateTime || ev.start?.date || '',
           end: ev.end?.dateTime || ev.end?.date || '',
@@ -339,6 +338,10 @@ export default function BookingPage() {
   const handleSubmit = async () => {
     if (!selectedDate || !selectedSlotIso || !eventType || !hostProfile) return
     if (!formData.name || !formData.email) return
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+      setBookingError('Please enter a valid email address.')
+      return
+    }
 
     setIsSubmitting(true)
     try {
@@ -386,12 +389,13 @@ export default function BookingPage() {
         const occ = occurrences[idx]
 
         // 1. Meeting link + optional Google Calendar API (invite) — only when event type enables it
-        const useGoogleMeet = eventType.location === 'google-meet'
+        // 'google-meet' is no longer an offered location, but legacy event types may still have it.
+        const useGoogleMeet = (eventType.location as string) === 'google-meet'
         let meetingLink: string
 
         if (useGoogleMeet) {
           if (useGoogleCalendarApi) {
-            const calendarDescription = formData.additionalInfo || 'Booked via BookMe'
+            const calendarDescription = formData.additionalInfo || 'Booked via BookWithMe'
             const calendarResult = await createBookingEvent({
               hostClerkUserId: hostProfile.id,
               title: `${eventType.title} with ${formData.name}`,
@@ -422,7 +426,7 @@ export default function BookingPage() {
           meetingLink = buildVideoCallMeetingUrl(roomId)
 
           if (useGoogleCalendarApi) {
-            const calendarDescription = `${formData.additionalInfo || 'Booked via BookMe'}\n\nJoin meeting: ${meetingLink}`
+            const calendarDescription = `${formData.additionalInfo || 'Booked via BookWithMe'}\n\nJoin meeting: ${meetingLink}`
             const calendarResult = await createBookingEvent({
               hostClerkUserId: hostProfile.id,
               title: `${eventType.title} with ${formData.name}`,
@@ -442,7 +446,7 @@ export default function BookingPage() {
         }
 
         // 2. Schedule booking via server action
-        const platformCalDescription = `${formData.additionalInfo || 'Booked via BookMe'}\n\nJoin meeting: ${meetingLink}`
+        const platformCalDescription = `${formData.additionalInfo || 'Booked via BookWithMe'}\n\nJoin meeting: ${meetingLink}`
         try {
           const scheduleResult = await scheduleCalendarEvent({
             hostUserId: hostProfile.id,
@@ -460,9 +464,16 @@ export default function BookingPage() {
             additionalInfo: formData.additionalInfo || undefined,
             answers: Object.keys(questionAnswers).length > 0 ? questionAnswers : undefined,
             guestTimezone: bookerTimezone,
-            // Honor the per-booking "Also send email notification" toggle (sendEmailToo).
-            // idx === 0 limits the confirmation to the first occurrence of a recurring series.
-            sendConfirmationEmail: idx === 0 && sendEmailToo,
+            // Guest-selected duration for multi-duration event types; server validates it against the
+            // event type's configured durations and computes the authoritative endTime from it.
+            duration: effectiveDuration,
+            // App origin so the server can embed a guest manage/cancel link in the confirmation email.
+            origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+            // Occurrence gate: only the first occurrence of a recurring series sends confirmation email
+            // (so the host isn't emailed once per occurrence).
+            sendConfirmationEmail: idx === 0,
+            // Guest's per-booking "Also send email notification" choice — gates only the guest's copy.
+            sendGuestEmail: sendEmailToo,
           })
           if (!scheduleResult.success) {
             if (idx === 0) {
@@ -511,8 +522,8 @@ export default function BookingPage() {
         totalOccurrences: occurrences.length,
       }
 
-      // 4. Notify guest (only for the first occurrence)
-      const shouldSendEmail = eventTypeToggles?.sendExternalEmail ?? true
+      // 4. Notify guest (only for the first occurrence). Transactional email is sent server-side by
+      // the schedule action; this notify() handles in-app DeepSpace Mail for internal guests.
       const dsmOn =
         eventTypeToggles?.sendDeepSpaceMail ?? eventType?.sendDeepSpaceMail ?? false
       try {
@@ -532,11 +543,6 @@ export default function BookingPage() {
           meetingLink: firstBooking.meetingLink,
           additionalInfo: (formData.additionalInfo || '') + recurrenceNote,
           sendDeepSpaceMail: dsmOn,
-          sendExternalEmail: shouldSendEmail,
-          /** Internal guest: when DeepSpace Mail is on, always send confirmation email too (no extra checkbox). */
-          sendEmailToo: guestUserId
-            ? shouldSendEmail && (sendEmailToo || dsmOn)
-            : undefined,
           guestTimezone: bookerTimezone,
           hostTimezone: hostAvailability.timezone,
         })
@@ -664,7 +670,7 @@ export default function BookingPage() {
             <span className="text-[11px] font-bold text-[#6B7280] uppercase tracking-widest">Powered by</span>
             <div className="flex items-center gap-1.5 text-[#111827]">
               <CalendarCheck className="w-3.5 h-3.5" strokeWidth={2} />
-              <span className="text-sm font-bold tracking-tight">Book Me</span>
+              <span className="text-sm font-bold tracking-tight">BookWithMe</span>
             </div>
           </div>
         </div>
@@ -1336,7 +1342,7 @@ export default function BookingPage() {
         <span className="text-[11px] font-bold text-[#6B7280] uppercase tracking-widest">Powered by</span>
         <div className="flex items-center gap-1.5 text-[#111827]">
           <CalendarCheck className="w-3.5 h-3.5" strokeWidth={2} />
-          <span className="text-sm font-bold tracking-tight">Book Me</span>
+          <span className="text-sm font-bold tracking-tight">BookWithMe</span>
         </div>
       </div>
     </div>
