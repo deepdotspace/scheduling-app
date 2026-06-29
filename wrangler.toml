@@ -25,7 +25,7 @@ bindings = [
 [vars]
 APP_NAME = "bookwithme"
 # Same host as deepspace client `PROD_CONFIG.platformWorkerUrl` — used when `PLATFORM_WORKER` service binding is absent (local dev).
-PLATFORM_WORKER_URL = "https://deepspace-platform-worker.eudaimonicincorporated.workers.dev"
+PLATFORM_WORKER_URL = "https://platform-worker.deep.space"
 # Override in dashboard / .dev.vars — must match a verified sender in Resend (or your provider).
 BOOKING_EMAIL_FROM = "BookMe <book-me@updates.app.space>"
 # Skip Resend / `email/send` (set false or remove when you wire transactional email again).
