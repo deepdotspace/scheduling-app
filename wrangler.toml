@@ -23,6 +23,7 @@ bindings = [
 ]
 
 [vars]
+DEEPSPACE_APP_ID = "app_01KZ4FHFZZBV5QMZ5PGZF33HSM"
 APP_NAME = "bookwithme"
 # Same host as deepspace client `PROD_CONFIG.platformWorkerUrl` — used when `PLATFORM_WORKER` service binding is absent (local dev).
 PLATFORM_WORKER_URL = "https://platform-worker.deep.space"
