@@ -5,7 +5,7 @@
 import { BookMeAppShell } from '../book-me-app-shell'
 import { DeepSpaceAuthProvider, useAuth, PlatformProvider, GuestBanner } from 'deepspace'
 import { RecordProvider, RecordScope } from 'deepspace'
-import { APP_NAME, SCOPE_ID } from '../constants'
+import { SCOPE_ID } from '../constants'
 import { recordScopeSchemas } from '../schemas'
 
 export default function App() {
@@ -39,7 +39,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   return (
     <RecordProvider allowAnonymous>
-      <RecordScope roomId={SCOPE_ID} schemas={recordScopeSchemas} appId={APP_NAME}>
+      <RecordScope roomId={SCOPE_ID} schemas={recordScopeSchemas}>
         {children}
       </RecordScope>
     </RecordProvider>

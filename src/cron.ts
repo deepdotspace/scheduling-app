@@ -31,12 +31,12 @@ async function sendReminders(ctx: CronContext): Promise<void> {
   const now = Date.now()
   const bookings = await ctx.records.query('bookings', {
     where: { status: 'confirmed' },
-  })
+  }) as Array<{ recordId: string; data: Record<string, unknown> }>
 
   for (const booking of bookings) {
     // records.query returns { recordId, data: {...fields} } — booking fields live under .data.
-    const recordId = booking.recordId as string
-    const data = booking.data as Record<string, unknown>
+    const recordId = booking.recordId
+    const data = booking.data
     if (!data) continue
 
     const startTime = new Date(data.startTime as string).getTime()
