@@ -21,6 +21,8 @@ import {
   createDeepSpaceAI,
   buildCronContext,
   authWorkerFetch,
+  authenticatedRoomRequest,
+  resolveAppRole as sdkResolveAppRole,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
@@ -201,6 +203,26 @@ async function resolveAuth(req: Request, env: Env): Promise<VerifyResult | null>
   return (await verifyJwt(jwtConfig(env), token)).result
 }
 
+/**
+ * The SDK's resolveAppRole() addresses the RecordRoom as `app:${DEEPSPACE_APP_ID}`.
+ * This app's room — the one holding the `users` rows this reads — is keyed
+ * `app:${APP_NAME}` (SCOPE_ID in src/constants.ts, and every idFromName call in
+ * this file). Hand the helper the name the room is actually stored under. Every
+ * call site must go through this wrapper, never the raw export: a bare call
+ * reads an empty room and returns 'viewer' for everyone but the owner. The
+ * import is aliased so the raw export is unreachable by this name.
+ */
+function resolveAppRole(env: Env, userId: string) {
+  return sdkResolveAppRole(
+    {
+      RECORD_ROOMS: env.RECORD_ROOMS,
+      DEEPSPACE_APP_ID: env.APP_NAME,
+      OWNER_USER_ID: env.OWNER_USER_ID,
+    },
+    userId,
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Social OAuth redirect + code exchange
 // ---------------------------------------------------------------------------
@@ -285,10 +307,17 @@ app.all('/api/auth/*', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// Debug routes are available only when explicitly enabled. Their Durable
-// Object handlers are unauthenticated, so production remains closed by default.
+// Debug routes are available only when explicitly enabled, so production stays
+// closed by default. The DO's debug handlers are unauthenticated and read
+// identity from REQUEST HEADERS, so forwarding c.req.raw unguarded would let
+// any caller assert x-user-id / x-user-role. Require a verified admin first.
 app.all('/api/debug/*', async (c) => {
   if (c.env.ALLOW_DEBUG_ROUTES !== 'true') return c.notFound()
+  const auth = await resolveAuth(c.req.raw, c.env)
+  if (!auth) return c.json({ error: 'unauthorized' }, 401)
+  if ((await resolveAppRole(c.env, auth.userId)) !== 'admin') {
+    return c.json({ error: 'forbidden' }, 403)
+  }
   const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
   return stub.fetch(c.req.raw)
 })
@@ -395,61 +424,82 @@ app.all('/api/integrations/:path{.+}', async (c) => {
 // WebSocket routes
 // ---------------------------------------------------------------------------
 
+/**
+ * Proxy a browser WebSocket to its room Durable Object.
+ *
+ * Identity crosses the worker → DO hop in HEADERS, never on the URL.
+ * `authenticatedRoomRequest` strips `token`, the five legacy identity query
+ * params and the five inbound identity headers before setting verified ones,
+ * so a client can spoof neither channel. Three states: no token = anonymous
+ * (the public booking page relies on this), invalid token = 401, valid token =
+ * JWT identity.
+ *
+ * Name and avatar are forwarded because without a name the RecordRoom's
+ * registerUser() seeds the shared `users` row with the "Anonymous" sentinel,
+ * which is what guests would then see as the host's name on the booking page.
+ *
+ * The verified EMAIL is deliberately withheld from every room: this app's
+ * `users` collection is world-readable (`read: true` — the public booking page
+ * reads host name/avatar and the app room accepts anonymous connections), and
+ * registerUser() persists whatever email it is handed into that row. Host email
+ * lives in the private `host-contacts` collection instead (see
+ * src/actions/schedule-event.ts). The SDK forwards `claims.email` when it is
+ * present, so the claim is dropped here rather than unset downstream.
+ */
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
-  extraParams?: (auth: VerifyResult) => Record<string, string>,
+  extraIdentity?: (auth: VerifyResult, env: Env) => { role?: string } | Promise<{ role?: string }>,
 ) {
   return async (c: any) => {
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
-    const url = new URL(c.req.url)
-    const token = url.searchParams.get('token')
-    const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
+    if (!id) return new Response('Not found', { status: 404 })
+    const token = new URL(c.req.url).searchParams.get('token')
 
-    const doUrl = new URL(c.req.url)
-    if (auth) {
-      doUrl.searchParams.set('userId', auth.userId)
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams(auth))) {
-          doUrl.searchParams.set(k, v)
-        }
-      }
+    let auth: VerifyResult | null = null
+    if (token) {
+      auth = (await verifyJwt(jwtConfig(c.env), token)).result
+      if (!auth) return new Response('Unauthorized', { status: 401 })
     }
-    doUrl.searchParams.delete('token')
 
+    const roomRequest = authenticatedRoomRequest(
+      c.req.raw,
+      auth && { userId: auth.userId, claims: { name: auth.claims.name, image: auth.claims.image } },
+      auth ? await extraIdentity?.(auth, c.env) : undefined,
+    )
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
-    return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+    return stub.fetch(roomRequest)
   }
 }
 
-// Forward the authenticated user's name/avatar (NOT email) to the RecordRoom DO. Without a name,
-// the DO's registerUser seeds the shared `users` record with the "Anonymous" sentinel — which is
-// what guests then see as the host's name on the booking page. Email is deliberately NOT forwarded:
-// the `users` collection is world-readable (the public booking page reads host name/avatar, and the
-// app room allows anonymous connections), and registerUser would persist email into rows that any
-// visitor can list. Name and avatar are the only fields the public booking page needs.
-app.get('/ws/:roomId', wsRoute(
-  (env) => env.RECORD_ROOMS,
-  (auth) => ({
-    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-  }),
+// No extra identity: the RecordRoom derives the connection's role from the
+// `users` row it maintains itself, and name/avatar already ride in the verified
+// headers.
+app.get('/ws/:roomId', wsRoute((env) => env.RECORD_ROOMS))
+
+app.get('/ws/yjs/:docId', wsRoute(
+  (env) => env.YJS_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
 ))
 
-app.get('/ws/yjs/:docId', wsRoute((env) => env.YJS_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/cron/:roomId', wsRoute((env) => env.CRON_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/presence/:scopeId', wsRoute(
-  (env) => env.PRESENCE_ROOMS,
-  (auth) => ({
-    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-    ...(auth.claims.email ? { userEmail: auth.claims.email } : {}),
-    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-  }),
+app.get('/ws/canvas/:docId', wsRoute(
+  (env) => env.CANVAS_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
 ))
+
+// Write access (trigger / pause / resume) follows the caller's real app role
+// from the `users` collection instead of a constant 'member'. Anonymous
+// connections carry no role header and become viewers, which CronRoom enforces
+// as read-only.
+app.get('/ws/cron/:roomId', wsRoute(
+  (env) => env.CRON_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
+))
+
+// v0.19.0 dropped email and avatar from ephemeral presence — PresencePeer now
+// carries only userId/userName, and the name rides in the verified headers, so
+// there is no extra identity to forward here.
+app.get('/ws/presence/:scopeId', wsRoute((env) => env.PRESENCE_ROOMS))
 
 // ---------------------------------------------------------------------------
 // Server actions
@@ -643,7 +693,12 @@ app.get('*', async (c) => {
   const response = await c.env.ASSETS.fetch(c.req.raw)
   if (response.status === 404) {
     const url = new URL(c.req.url)
-    url.pathname = '/index.html'
+    // A FILE, not a client route: a miss must 404. Returning the shell here
+    // is HTML parsed as JavaScript, which is a blank page.
+    if (url.pathname.slice(url.pathname.lastIndexOf('/') + 1).includes('.')) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+    url.pathname = '/'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
   return response
