@@ -131,8 +131,16 @@ describe('/api/files/* proxy', () => {
     env = {
       APP_IDENTITY_TOKEN: 'identity-token',
       DEEPSPACE_APP_ID: 'app_01TEST',
+      APP_NAME: 'bookwithme',
       AUTH_JWT_PUBLIC_KEY: await exportSPKI(publicKey),
       AUTH_JWT_ISSUER: ISSUER,
+      // Every /api/* request runs the cron-arming middleware on its way in.
+      // Real deploys always have this binding; the fake needs it too, or the
+      // suite exercises the armer's failure path on every single call.
+      CRON_ROOMS: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async () => new Response(null, { status: 404 }) }),
+      },
       PLATFORM_WORKER: {
         fetch: async (req: Request) => {
           forwarded.push(req)
