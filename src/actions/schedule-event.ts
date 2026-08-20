@@ -28,9 +28,10 @@ async function hashCancelToken(token: string): Promise<string> {
 }
 
 // --- Abuse guard: cap how many confirmation emails one guest address can trigger ---
-// Booking emails are developer-billed, so a script (or someone email-bombing a victim address)
-// directly costs the app owner. Count this guest's recent booking-events straight from the
-// bookings collection — a recurring series counts once (via seriesId). No extra infrastructure.
+// This action is callable without a JWT (the booking link is the whole point), and a send with no
+// caller is billed to the app owner, so a script — or someone email-bombing a victim address —
+// directly costs them. Count this guest's recent booking-events straight from the bookings
+// collection — a recurring series counts once (via seriesId). No extra infrastructure.
 const EMAIL_RL_WINDOW_MS = 60 * 60 * 1000 // rolling 1 hour
 const EMAIL_RL_MAX = 5                     // max distinct booking-events per guest email / window
 const EMAIL_RL_SCAN = 50                   // bound the lookback scan
@@ -93,7 +94,11 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
      * client `endTime` is never trusted.
      */
     duration?: number
-    /** App origin (e.g. https://book.example.com) used to build the guest manage/cancel link in email. */
+    /**
+     * App origin (e.g. https://book.example.com) used to build the guest manage/cancel link in email.
+     * The worker overwrites this with the request's own origin before dispatch — a caller cannot
+     * choose which domain the link in that email points at. See the action route in worker.ts.
+     */
     origin?: string
     /**
      * Occurrence gate: when false, skip ALL transactional confirmation email for this call (host and
@@ -120,6 +125,17 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
   if (!hostUserId || !eventTypeId || !startTime || !guestEmail || !guestName) {
     return { success: false, error: 'Missing required fields' }
   }
+
+  /**
+   * `guestUserId` claims that the booker IS a particular platform account: it is stored on the
+   * booking (the guest's Meetings list reads it) and it writes a calendar event into that account's
+   * `user:{id}` room. A signed-in caller had the claim resolved from the directory and is at least
+   * attributable; an anonymous caller is nobody, so the claim is dropped rather than believed —
+   * otherwise anyone with the public booking link could drop rows into a stranger's calendar by
+   * naming their id. A signed-out booking is attributed by guestName/guestEmail, and `guestUserId`
+   * stays empty, which is exactly what "booked by someone with no account" means here.
+   */
+  const attributedGuestUserId = ctx.userId === '' ? undefined : guestUserId
 
   // Reject malformed guest emails server-side: a direct API call bypasses any client check, and an
   // unsendable address means the guest silently never receives their confirmation.
@@ -353,7 +369,7 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     hostEmail: hostDisplayEmail,
     guestName,
     guestEmail,
-    guestUserId: guestUserId ?? '',
+    guestUserId: attributedGuestUserId ?? '',
     startTime: start.toISOString(),
     endTime: end.toISOString(),
     meetingLink: meetingLink ?? '',
@@ -380,10 +396,11 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
     return { success: false, error: 'Failed to create booking record' }
   }
 
-  // 7b. If guestUserId provided (and distinct from host), create a calendar event in guest's user DO
-  if (guestUserId && guestUserId !== hostUserId) {
+  // 7b. If the booker is an attributable platform user (and distinct from the host), mirror the
+  // meeting into their own user DO. Anonymous bookers resolve to undefined and are skipped.
+  if (attributedGuestUserId && attributedGuestUserId !== hostUserId) {
     try {
-      await ctx.tools.create(`user:${guestUserId}`, 'events', {
+      await ctx.tools.create(`user:${attributedGuestUserId}`, 'events', {
         Title: `${eventTitle} with ${hostDisplayName || 'Host'}`,
         Description: description ?? '',
         StartTime: start.toISOString(),
@@ -476,7 +493,7 @@ export const scheduleEvent: ActionHandler = async (ctx) => {
       messageBody: notificationBody,
       guestName,
       hostUserId,
-      guestUserId,
+      guestUserId: attributedGuestUserId,
     })
   } catch (err) {
     console.warn('[schedule-event] post-commit notifications failed:', err)

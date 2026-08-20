@@ -21,6 +21,8 @@ import {
   createDeepSpaceAI,
   buildCronContext,
   authWorkerFetch,
+  authenticatedRoomRequest,
+  resolveAppRole as sdkResolveAppRole,
 } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import {
@@ -33,11 +35,14 @@ import {
 import type { ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
 import type { ActionTools } from './src/lib/action-types.js'
 import { streamText, stepCountIs } from 'ai'
-import { actions } from './src/actions/index.js'
+import { actions, PUBLIC_ACTIONS } from './src/actions/index.js'
 import { handler as cronTaskHandler, tasks as cronTasks } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
+import { BOOKING_ASSISTANT_MODEL_ID, CHAT_MAX_OUTPUT_TOKENS } from './src/ai/models.js'
+import { reachesUserNamespace } from './src/lib/file-proxy-scope.js'
+import { cronRoomName, createCronArmer } from './src/lib/cron-arm.js'
 
 // =============================================================================
 // DO Manifest — declares all Durable Objects for dynamic deploy bindings
@@ -89,7 +94,7 @@ export class AppCronRoom extends CronRoom<Env> {
 // Types
 // =============================================================================
 
-interface Env extends DOBindings<typeof __DO_MANIFEST__> {
+export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   ASSETS: Fetcher
   /** Production service binding; local dev uses `PLATFORM_WORKER_URL` in `.dev.vars` instead. */
   PLATFORM_WORKER?: Fetcher
@@ -187,6 +192,46 @@ const app = new Hono<AppContext>()
 app.use('/api/*', cors())
 
 // ---------------------------------------------------------------------------
+// Arm the cron room
+//
+// Without this the send-reminders task in src/cron.ts never runs: CronRoom only
+// schedules its first alarm when the DO is first touched, and nothing else in
+// BookMe ever touches it. See src/lib/cron-arm.ts for the full why.
+//
+// Mounted on /api/* rather than * on purpose. Arming is a one-shot event that
+// self-perpetuates once it lands, so it does not need the widest possible
+// request surface — it needs the requests that mean somebody is actually using
+// the app. Both audiences reach /api/* within the first second: a signed-in
+// host's SPA asks for /api/auth/token on boot, and the public booking flow
+// posts to /api/actions/* (schedule-event, or cancel/reschedule straight from
+// a confirmation email, which a logged-out guest may call). Mounting on *
+// instead would put the ping on the SPA-fallback route, firing it on the first
+// favicon or stylesheet request of every new isolate — including a crawler's.
+// ---------------------------------------------------------------------------
+
+const armCron = createCronArmer()
+
+app.use('/api/*', async (c, next) => {
+  const arming = armCron(() => {
+    const ns = c.env.CRON_ROOMS
+    return ns.get(ns.idFromName(cronRoomName(c.env.APP_NAME))).fetch('https://cron-arm/ping')
+  })
+  // waitUntil, never await: arming must not sit in front of the response.
+  // `c.executionCtx` throws when the app is driven without one (unit tests call
+  // app.fetch(request, env) with two arguments); the ping is already in flight
+  // by then, and a missing ExecutionContext must not turn a real route into a
+  // 500 just because arming rode along on it.
+  if (arming) {
+    try {
+      c.executionCtx.waitUntil(arming)
+    } catch {
+      /* no ExecutionContext to hand it to; the ping runs detached */
+    }
+  }
+  await next()
+})
+
+// ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
 
@@ -199,6 +244,26 @@ async function resolveAuth(req: Request, env: Env): Promise<VerifyResult | null>
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) return null
   return (await verifyJwt(jwtConfig(env), token)).result
+}
+
+/**
+ * The SDK's resolveAppRole() addresses the RecordRoom as `app:${DEEPSPACE_APP_ID}`.
+ * This app's room — the one holding the `users` rows this reads — is keyed
+ * `app:${APP_NAME}` (SCOPE_ID in src/constants.ts, and every idFromName call in
+ * this file). Hand the helper the name the room is actually stored under. Every
+ * call site must go through this wrapper, never the raw export: a bare call
+ * reads an empty room and returns 'viewer' for everyone but the owner. The
+ * import is aliased so the raw export is unreachable by this name.
+ */
+function resolveAppRole(env: Env, userId: string) {
+  return sdkResolveAppRole(
+    {
+      RECORD_ROOMS: env.RECORD_ROOMS,
+      DEEPSPACE_APP_ID: env.APP_NAME,
+      OWNER_USER_ID: env.OWNER_USER_ID,
+    },
+    userId,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -285,10 +350,17 @@ app.all('/api/auth/*', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// Debug routes are available only when explicitly enabled. Their Durable
-// Object handlers are unauthenticated, so production remains closed by default.
+// Debug routes are available only when explicitly enabled, so production stays
+// closed by default. The DO's debug handlers are unauthenticated and read
+// identity from REQUEST HEADERS, so forwarding c.req.raw unguarded would let
+// any caller assert x-user-id / x-user-role. Require a verified admin first.
 app.all('/api/debug/*', async (c) => {
   if (c.env.ALLOW_DEBUG_ROUTES !== 'true') return c.notFound()
+  const auth = await resolveAuth(c.req.raw, c.env)
+  if (!auth) return c.json({ error: 'unauthorized' }, 401)
+  if ((await resolveAppRole(c.env, auth.userId)) !== 'admin') {
+    return c.json({ error: 'forbidden' }, 403)
+  }
   const stub = c.env.RECORD_ROOMS.get(c.env.RECORD_ROOMS.idFromName(`app:${c.env.APP_NAME}`))
   return stub.fetch(c.req.raw)
 })
@@ -395,61 +467,82 @@ app.all('/api/integrations/:path{.+}', async (c) => {
 // WebSocket routes
 // ---------------------------------------------------------------------------
 
+/**
+ * Proxy a browser WebSocket to its room Durable Object.
+ *
+ * Identity crosses the worker → DO hop in HEADERS, never on the URL.
+ * `authenticatedRoomRequest` strips `token`, the five legacy identity query
+ * params and the five inbound identity headers before setting verified ones,
+ * so a client can spoof neither channel. Three states: no token = anonymous
+ * (the public booking page relies on this), invalid token = 401, valid token =
+ * JWT identity.
+ *
+ * Name and avatar are forwarded because without a name the RecordRoom's
+ * registerUser() seeds the shared `users` row with the "Anonymous" sentinel,
+ * which is what guests would then see as the host's name on the booking page.
+ *
+ * The verified EMAIL is deliberately withheld from every room: this app's
+ * `users` collection is world-readable (`read: true` — the public booking page
+ * reads host name/avatar and the app room accepts anonymous connections), and
+ * registerUser() persists whatever email it is handed into that row. Host email
+ * lives in the private `host-contacts` collection instead (see
+ * src/actions/schedule-event.ts). The SDK forwards `claims.email` when it is
+ * present, so the claim is dropped here rather than unset downstream.
+ */
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
-  extraParams?: (auth: VerifyResult) => Record<string, string>,
+  extraIdentity?: (auth: VerifyResult, env: Env) => { role?: string } | Promise<{ role?: string }>,
 ) {
   return async (c: any) => {
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
-    const url = new URL(c.req.url)
-    const token = url.searchParams.get('token')
-    const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
+    if (!id) return new Response('Not found', { status: 404 })
+    const token = new URL(c.req.url).searchParams.get('token')
 
-    const doUrl = new URL(c.req.url)
-    if (auth) {
-      doUrl.searchParams.set('userId', auth.userId)
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams(auth))) {
-          doUrl.searchParams.set(k, v)
-        }
-      }
+    let auth: VerifyResult | null = null
+    if (token) {
+      auth = (await verifyJwt(jwtConfig(c.env), token)).result
+      if (!auth) return new Response('Unauthorized', { status: 401 })
     }
-    doUrl.searchParams.delete('token')
 
+    const roomRequest = authenticatedRoomRequest(
+      c.req.raw,
+      auth && { userId: auth.userId, claims: { name: auth.claims.name, image: auth.claims.image } },
+      auth ? await extraIdentity?.(auth, c.env) : undefined,
+    )
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
-    return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+    return stub.fetch(roomRequest)
   }
 }
 
-// Forward the authenticated user's name/avatar (NOT email) to the RecordRoom DO. Without a name,
-// the DO's registerUser seeds the shared `users` record with the "Anonymous" sentinel — which is
-// what guests then see as the host's name on the booking page. Email is deliberately NOT forwarded:
-// the `users` collection is world-readable (the public booking page reads host name/avatar, and the
-// app room allows anonymous connections), and registerUser would persist email into rows that any
-// visitor can list. Name and avatar are the only fields the public booking page needs.
-app.get('/ws/:roomId', wsRoute(
-  (env) => env.RECORD_ROOMS,
-  (auth) => ({
-    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-  }),
+// No extra identity: the RecordRoom derives the connection's role from the
+// `users` row it maintains itself, and name/avatar already ride in the verified
+// headers.
+app.get('/ws/:roomId', wsRoute((env) => env.RECORD_ROOMS))
+
+app.get('/ws/yjs/:docId', wsRoute(
+  (env) => env.YJS_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
 ))
 
-app.get('/ws/yjs/:docId', wsRoute((env) => env.YJS_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/canvas/:docId', wsRoute((env) => env.CANVAS_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/cron/:roomId', wsRoute((env) => env.CRON_ROOMS, () => ({ role: 'member' })))
-
-app.get('/ws/presence/:scopeId', wsRoute(
-  (env) => env.PRESENCE_ROOMS,
-  (auth) => ({
-    ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-    ...(auth.claims.email ? { userEmail: auth.claims.email } : {}),
-    ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-  }),
+app.get('/ws/canvas/:docId', wsRoute(
+  (env) => env.CANVAS_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
 ))
+
+// Write access (trigger / pause / resume) follows the caller's real app role
+// from the `users` collection instead of a constant 'member'. Anonymous
+// connections carry no role header and become viewers, which CronRoom enforces
+// as read-only.
+app.get('/ws/cron/:roomId', wsRoute(
+  (env) => env.CRON_ROOMS,
+  async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
+))
+
+// v0.19.0 dropped email and avatar from ephemeral presence — PresencePeer now
+// carries only userId/userName, and the name rides in the verified headers, so
+// there is no extra identity to forward here.
+app.get('/ws/presence/:scopeId', wsRoute((env) => env.PRESENCE_ROOMS))
 
 // ---------------------------------------------------------------------------
 // Server actions
@@ -474,10 +567,27 @@ app.post('/api/actions/:name', async (c) => {
     typeof params.cancelToken === 'string' &&
     params.cancelToken.trim().length > 0
 
-  if (!auth && !hasGuestToken) return c.json({ error: 'Unauthorized' }, 401)
+  // Three ways past this gate, and only three:
+  //  - a verified JWT (every authoring action needs one),
+  //  - a per-booking cancelToken for the two guest self-service actions above,
+  //  - membership of PUBLIC_ACTIONS, which is the booking link itself: a first-time booker holds
+  //    no secret at all, so those actions authorize on what they can verify server-side (the event
+  //    type is active and belongs to the named host, the slot passes the host's own availability
+  //    and conflict rules) rather than on who is asking. See src/actions/index.ts.
+  if (!auth && !hasGuestToken && !PUBLIC_ACTIONS.has(name)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
 
-  // Empty userId for the guest-token path: the action self-authorizes via hasValidToken, and the
-  // x-app-action header in createActionTools bypasses per-user RBAC for the booking mutation.
+  // The confirmation email's manage/cancel link is built from `origin`. Take it from the request
+  // the browser actually made, never from the body: schedule-event is reachable without a JWT and
+  // mails an arbitrary address, so a caller-chosen origin would put an attacker's URL in front of
+  // a stranger, in a message sent from this app's own sender. Set unconditionally, so the guest's
+  // cancel link is also present when a client omits the field.
+  params.origin = new URL(c.req.url).origin
+
+  // Empty userId for both no-JWT paths: cancel/reschedule self-authorize via hasValidToken, the
+  // public actions never key anything off the caller's identity, and the x-app-action header in
+  // createActionTools bypasses per-user RBAC for the writes they do make.
   const userId = auth?.userId ?? ''
   const authHeader = c.req.header('Authorization')
   const callerJwt = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : ''
@@ -516,11 +626,16 @@ app.post('/api/ai/chat', async (c) => {
     return res.json()
   })
 
+  // The model id and the output budget both come from `src/ai/models.ts`.
+  // Never inline either here: a retired literal is a provider 404 that only
+  // shows up when a user opens the assistant, and an unset budget makes the
+  // proxy reserve credit against the model's 128k ceiling.
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514') as Parameters<typeof streamText>[0]['model'],
+    model: anthropic(BOOKING_ASSISTANT_MODEL_ID) as Parameters<typeof streamText>[0]['model'],
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
     messages: messages as NonNullable<Parameters<typeof streamText>[0]['messages']>,
     tools: tools as Parameters<typeof streamText>[0]['tools'],
+    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(5),
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
@@ -549,16 +664,36 @@ app.all('/platform/:path{.+}', async (c) => {
 
 app.all('/api/files/*', async (c) => {
   const auth = await resolveAuth(c.req.raw, c.env)
-  const userId = auth?.userId ?? null
+
+  // Nothing in this app stores or reads a scoped R2 file — no useR2Files, no
+  // upload, no stored file URL rendered anywhere — so there is no public read
+  // to serve and the whole mount requires a verified JWT: reads, listing,
+  // uploads and deletes alike.
+  if (!auth) return c.json({ error: 'Unauthorized' }, 401)
 
   const url = new URL(c.req.url)
+
+  // A verified identity is not enough on its own: the platform resolves
+  // scope 'app' to `apps/<resourceId>/`, scope 'self' to a strict descendant
+  // of it, and admits keys with `key.startsWith(prefix)`. See
+  // src/lib/file-proxy-scope.ts for why that lets one signed-in user reach
+  // another's files and what this refuses.
+  if (reachesUserNamespace(url.pathname, url.searchParams)) {
+    return c.json({ error: 'Access denied: key belongs to a private scope' }, 403)
+  }
+
   const platformUrl = new URL(c.req.url)
   platformUrl.pathname = url.pathname.replace('/api/files', '/internal/files')
 
   const headers = new Headers(c.req.raw.headers)
+  // Strip any caller-supplied identity before setting our own. Only a
+  // JWT-derived userId may reach the platform-worker — otherwise an
+  // unauthenticated caller could send `x-user-id: <victim>` with `?scope=self`
+  // and the platform would resolve, and let it mutate, the victim's prefix.
+  headers.delete('x-user-id')
   headers.set('x-app-identity-token', c.env.APP_IDENTITY_TOKEN ?? '')
   headers.set('x-app-id', c.env.DEEPSPACE_APP_ID)
-  if (userId) headers.set('x-user-id', userId)
+  headers.set('x-user-id', auth.userId)
 
   const resp = await platformWorkerFetch(
     c.env,
@@ -643,7 +778,12 @@ app.get('*', async (c) => {
   const response = await c.env.ASSETS.fetch(c.req.raw)
   if (response.status === 404) {
     const url = new URL(c.req.url)
-    url.pathname = '/index.html'
+    // A FILE, not a client route: a miss must 404. Returning the shell here
+    // is HTML parsed as JavaScript, which is a blank page.
+    if (url.pathname.slice(url.pathname.lastIndexOf('/') + 1).includes('.')) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+    url.pathname = '/'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
   return response
@@ -688,7 +828,14 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
 
     // Use the owner JWT for developer-billed calls, the caller's JWT otherwise.
     // The api-worker bills the JWT subject — no client-supplied override.
-    const jwt = billingMode === 'developer' ? env.APP_OWNER_JWT : callerJwt
+    //
+    // A user-billed call with no caller JWT only happens on a no-JWT action path (a guest booking,
+    // or a guest cancelling from their email link). There is no user to bill there, and sending
+    // `Bearer ` just 401s at the api-worker — which is how a guest's confirmation email, and with
+    // it their only cancel link, silently went missing. Those sends fall back to the app owner,
+    // the identity cron reminders already send under. schedule-event's per-guest-email throttle
+    // (EMAIL_RL_MAX) is what bounds the cost of that.
+    const jwt = billingMode === 'developer' || !callerJwt ? env.APP_OWNER_JWT : callerJwt
 
     let body = data
     if (endpoint === 'email/send' && body && typeof body === 'object' && body !== null) {

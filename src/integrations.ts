@@ -11,10 +11,13 @@
 
 export const integrations: Record<string, { billing: 'developer' | 'user' }> = {
   /**
-   * Resend (or provider) via api-worker `email/send`. Billed to the signed-in caller: booking is
-   * sign-in-only, so the user who triggers a send (the booker on schedule, the initiator on
-   * cancel/reschedule) pays from their own credits rather than the app owner footing every email.
-   * Note: cron reminder sends have no caller and stay on the app-owner identity (see src/cron.ts).
+   * Resend (or provider) via api-worker `email/send`. Billed to the caller when there is one — the
+   * booker on schedule, the initiator on cancel/reschedule — so a signed-in user pays for their own
+   * mail rather than the app owner footing every email.
+   *
+   * Sends with no caller fall back to the app-owner identity in `createActionTools`: cron reminders
+   * (see src/cron.ts) and the public booking path, where a signed-out guest has no credits to spend
+   * and their confirmation carries the only cancel link they will ever get.
    */
   email: { billing: 'user' },
 

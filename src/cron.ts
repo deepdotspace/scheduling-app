@@ -27,7 +27,28 @@ export async function handler(taskName: string, ctx: CronContext): Promise<void>
   }
 }
 
-async function sendReminders(ctx: CronContext): Promise<void> {
+/**
+ * Sweep every confirmed booking and mail the host the reminders that are due
+ * right now. Exported so the first-tick blast radius is pinned by unit tests
+ * (src/cron.test.ts) rather than argued about.
+ *
+ * Three independent guards keep this bounded, and all three matter most on the
+ * FIRST tick after the cron room is armed, when every booking is being looked
+ * at for the first time:
+ *
+ *  1. A booking that already started is skipped outright (`startTime <= now`).
+ *     Reminders for meetings that happened while the cron was dead are missed,
+ *     not replayed — nobody wants "your meeting starts in 1 hour" for last June.
+ *  2. The windows are absolute and narrow (23 < h <= 25, and 0 < h <= 1.5), not
+ *     "everything still in the future". A booking three days out gets nothing;
+ *     a booking ten hours out has already missed its 24h slot and only gets the
+ *     1h one. So an outage cannot pile every future booking into one tick.
+ *  3. `remindersSent` is the idempotence marker, and it is written only after a
+ *     send actually succeeds, so a transient email failure retries on the next
+ *     tick while a success is never repeated across the ~4 ticks a booking
+ *     spends inside a window.
+ */
+export async function sendReminders(ctx: CronContext): Promise<void> {
   const now = Date.now()
   const bookings = await ctx.records.query('bookings', {
     where: { status: 'confirmed' },
