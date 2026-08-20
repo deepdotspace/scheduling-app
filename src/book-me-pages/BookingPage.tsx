@@ -83,6 +83,13 @@ export default function BookingPage() {
   const [sendEmailToo, setSendEmailToo] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [bookingComplete, setBookingComplete] = useState<(Booking & { totalOccurrences?: number }) | null>(null)
+  /**
+   * `/manage/:bookingId/:token` for the booking just made. schedule-event mints the cancelToken and
+   * hands back the raw value once; the confirmation email carries the same link. Shown here too so a
+   * signed-out guest — who has no Meetings page and no account to come back to — still holds a way to
+   * cancel when that email is delayed, filtered, or never sent.
+   */
+  const [manageUrl, setManageUrl] = useState<string | null>(null)
   const [bookingError, setBookingError] = useState<string | null>(null)
   const [calendarBusyTimes, setCalendarBusyTimes] = useState<Array<{ start: string; end: string }>>([])
   const [busyTimesLoading, setBusyTimesLoading] = useState(false)
@@ -483,7 +490,12 @@ export default function BookingPage() {
             console.warn(`[BookMe] Recurring booking #${idx + 1} failed:`, scheduleResult.error)
             continue
           }
-          if (idx === 0) eventTypeToggles = scheduleResult.eventType
+          if (idx === 0) {
+            eventTypeToggles = scheduleResult.eventType
+            if (scheduleResult.bookingId && scheduleResult.cancelToken) {
+              setManageUrl(`/manage/${scheduleResult.bookingId}/${scheduleResult.cancelToken}`)
+            }
+          }
         } catch (err) {
           if (idx === 0) {
             console.warn('[BookMe] Platform calendar scheduling failed:', err)
@@ -802,6 +814,16 @@ export default function BookingPage() {
                 </div>
               )}
             </div>
+
+            {manageUrl && (
+              <p className="text-sm text-[#6B7280] font-medium mt-4">
+                Need to change something?{' '}
+                <a href={manageUrl} className="text-[#111827] font-semibold underline">
+                  Manage or cancel this booking
+                </a>
+                . Save this link. It is how you get back to this booking later.
+              </p>
+            )}
 
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-2 mt-6 justify-center">

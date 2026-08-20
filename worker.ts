@@ -35,7 +35,7 @@ import {
 import type { ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
 import type { ActionTools } from './src/lib/action-types.js'
 import { streamText, stepCountIs } from 'ai'
-import { actions } from './src/actions/index.js'
+import { actions, PUBLIC_ACTIONS } from './src/actions/index.js'
 import { handler as cronTaskHandler, tasks as cronTasks } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
@@ -526,10 +526,27 @@ app.post('/api/actions/:name', async (c) => {
     typeof params.cancelToken === 'string' &&
     params.cancelToken.trim().length > 0
 
-  if (!auth && !hasGuestToken) return c.json({ error: 'Unauthorized' }, 401)
+  // Three ways past this gate, and only three:
+  //  - a verified JWT (every authoring action needs one),
+  //  - a per-booking cancelToken for the two guest self-service actions above,
+  //  - membership of PUBLIC_ACTIONS, which is the booking link itself: a first-time booker holds
+  //    no secret at all, so those actions authorize on what they can verify server-side (the event
+  //    type is active and belongs to the named host, the slot passes the host's own availability
+  //    and conflict rules) rather than on who is asking. See src/actions/index.ts.
+  if (!auth && !hasGuestToken && !PUBLIC_ACTIONS.has(name)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
 
-  // Empty userId for the guest-token path: the action self-authorizes via hasValidToken, and the
-  // x-app-action header in createActionTools bypasses per-user RBAC for the booking mutation.
+  // The confirmation email's manage/cancel link is built from `origin`. Take it from the request
+  // the browser actually made, never from the body: schedule-event is reachable without a JWT and
+  // mails an arbitrary address, so a caller-chosen origin would put an attacker's URL in front of
+  // a stranger, in a message sent from this app's own sender. Set unconditionally, so the guest's
+  // cancel link is also present when a client omits the field.
+  params.origin = new URL(c.req.url).origin
+
+  // Empty userId for both no-JWT paths: cancel/reschedule self-authorize via hasValidToken, the
+  // public actions never key anything off the caller's identity, and the x-app-action header in
+  // createActionTools bypasses per-user RBAC for the writes they do make.
   const userId = auth?.userId ?? ''
   const authHeader = c.req.header('Authorization')
   const callerJwt = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : ''
@@ -770,7 +787,14 @@ function createActionTools(env: Env, userId: string, callerJwt: string): ActionT
 
     // Use the owner JWT for developer-billed calls, the caller's JWT otherwise.
     // The api-worker bills the JWT subject — no client-supplied override.
-    const jwt = billingMode === 'developer' ? env.APP_OWNER_JWT : callerJwt
+    //
+    // A user-billed call with no caller JWT only happens on a no-JWT action path (a guest booking,
+    // or a guest cancelling from their email link). There is no user to bill there, and sending
+    // `Bearer ` just 401s at the api-worker — which is how a guest's confirmation email, and with
+    // it their only cancel link, silently went missing. Those sends fall back to the app owner,
+    // the identity cron reminders already send under. schedule-event's per-guest-email throttle
+    // (EMAIL_RL_MAX) is what bounds the cost of that.
+    const jwt = billingMode === 'developer' || !callerJwt ? env.APP_OWNER_JWT : callerJwt
 
     let body = data
     if (endpoint === 'email/send' && body && typeof body === 'object' && body !== null) {
