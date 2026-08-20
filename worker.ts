@@ -40,6 +40,7 @@ import { handler as cronTaskHandler, tasks as cronTasks } from './src/cron.js'
 import { schemas } from './src/schemas.js'
 import { integrations } from './src/integrations.js'
 import { buildSystemPrompt, buildReadOnlyTools } from './src/ai/tools.js'
+import { BOOKING_ASSISTANT_MODEL_ID, CHAT_MAX_OUTPUT_TOKENS } from './src/ai/models.js'
 
 // =============================================================================
 // DO Manifest — declares all Durable Objects for dynamic deploy bindings
@@ -566,11 +567,16 @@ app.post('/api/ai/chat', async (c) => {
     return res.json()
   })
 
+  // The model id and the output budget both come from `src/ai/models.ts`.
+  // Never inline either here: a retired literal is a provider 404 that only
+  // shows up when a user opens the assistant, and an unset budget makes the
+  // proxy reserve credit against the model's 128k ceiling.
   const result = streamText({
-    model: anthropic('claude-sonnet-4-20250514') as Parameters<typeof streamText>[0]['model'],
+    model: anthropic(BOOKING_ASSISTANT_MODEL_ID) as Parameters<typeof streamText>[0]['model'],
     system: buildSystemPrompt(c.env.APP_NAME, schemas),
     messages: messages as NonNullable<Parameters<typeof streamText>[0]['messages']>,
     tools: tools as Parameters<typeof streamText>[0]['tools'],
+    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(5),
     onError: ({ error }) => {
       console.error('[ai-chat] streamText error:', error)
